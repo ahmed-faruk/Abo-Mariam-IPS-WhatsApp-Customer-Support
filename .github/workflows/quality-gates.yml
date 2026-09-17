@@ -1,0 +1,66 @@
+name: Quality Gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  quality-gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore (locked mode)
+        run: dotnet restore WhatsAppMonitorAssistant.slnx --locked-mode
+
+      - name: Verify formatting
+        run: dotnet format WhatsAppMonitorAssistant.slnx --verify-no-changes --no-restore
+
+      - name: Build (warnings as errors)
+        run: dotnet build WhatsAppMonitorAssistant.slnx --no-restore -warnaserror
+
+      - name: Unit tests
+        run: dotnet test tests/Unit.Tests --no-build --logger "console;verbosity=normal"
+
+      - name: Architecture tests
+        run: dotnet test tests/Architecture.Tests --no-build --logger "console;verbosity=normal"
+
+      # ---------------------------------------------------------------------
+      # Future gates: placeholders only.
+      #
+      # Nothing below is enabled. These are extension points so that adding a
+      # gate later is a new step in this same job, with no redesign, and so
+      # that no gate is ever reported as passing while it does not exist.
+      #
+      # Required gate                Owning ticket                       Step to add
+      # Integration.Tests            #5 (also #4 for PostgreSQL)         dotnet test tests/Integration.Tests --no-build   (PostgreSQL Testcontainer)
+      # Contract.Tests               #10 (Intelligence), #13 (Meta)      dotnet test tests/Contract.Tests --no-build
+      # E2E.Tests                    #15 (fake Meta/Ollama flow)         dotnet test tests/E2E.Tests --no-build
+      # Playwright critical smoke    #14 (Admin UI)                      npx playwright test
+      # Coverage (>=80% Domain/App)  CI expansion                        dotnet test ... --collect:"XPlat Code Coverage" + threshold check
+      # Vulnerability scan           CI expansion                        dotnet list package --vulnerable --include-transitive
+      # Docker image build           pilot work (post-acceptance)        docker build
+      #
+      # Shape of a gate step once its ticket lands (do not use continue-on-error
+      # for a required gate):
+      #
+      # - name: Integration tests
+      #   run: dotnet test tests/Integration.Tests --no-build
+      #
+      # ---------------------------------------------------------------------
