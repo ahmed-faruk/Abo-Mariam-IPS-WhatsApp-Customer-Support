@@ -51,15 +51,20 @@ internal static class BoundaryRules
                     .And()
                     .HaveNameEndingWith("DbContext")));
 
-    /// <summary>Cross-module APIs must use the approved Contracts namespaces only.</summary>
+    /// <summary>
+    /// Cross-module APIs must use the approved Contracts namespaces only. Every type of the
+    /// consuming module, including its own Contracts, is checked against the non-contract
+    /// namespaces of the other modules. BuildingBlocks support namespaces are shared
+    /// abstractions rather than modules, so depending on them stays allowed.
+    /// </summary>
     public static IArchRule CrossModuleApiMustUseContractsOnly(ModuleBoundaries boundaries) =>
         Combine(
             boundaries.ModuleRoots,
             root => Types().That()
-                .ResideInNamespaceMatching(NamespacePatterns.NonContractNamespace(root))
+                .ResideInNamespaceMatching(NamespacePatterns.Descendants(root))
                 .Should()
                 .NotDependOnAny(Types().That()
-                    .ResideInNamespaceMatching(NamespacePatterns.Union(Others(boundaries, root)
+                    .ResideInNamespaceMatching(NamespacePatterns.Union(OtherModuleRoots(boundaries, root)
                         .Select(NamespacePatterns.NonContractNamespace)))));
 
     /// <summary>Contracts must not expose domain entities, persistence types or DbContexts.</summary>
@@ -111,6 +116,13 @@ internal static class BoundaryRules
 
     private static IEnumerable<string> Others(ModuleBoundaries boundaries, string root) =>
         boundaries.AllRoots.Where(candidate => !string.Equals(candidate, root, StringComparison.Ordinal));
+
+    /// <summary>
+    /// The other modules only. Support roots (BuildingBlocks) are shared abstractions and
+    /// the host is the composition root, so neither is a forbidden cross-module target.
+    /// </summary>
+    private static IEnumerable<string> OtherModuleRoots(ModuleBoundaries boundaries, string root) =>
+        boundaries.ModuleRoots.Where(candidate => !string.Equals(candidate, root, StringComparison.Ordinal));
 
     private static IArchRule Combine(IEnumerable<string> roots, Func<string, IArchRule> create) =>
         roots.Select(create).Aggregate((combined, next) => combined.And(next));

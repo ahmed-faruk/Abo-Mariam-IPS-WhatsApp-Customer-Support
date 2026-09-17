@@ -66,7 +66,10 @@ internal sealed record ModuleBoundaries
             "WhatsAppMonitorAssistant.Architecture.Tests.Fixtures.Compliant.Alpha",
             "WhatsAppMonitorAssistant.Architecture.Tests.Fixtures.Compliant.Beta",
         ],
-        SupportRoots = [],
+        SupportRoots =
+        [
+            "WhatsAppMonitorAssistant.Architecture.Tests.Fixtures.Compliant.Support",
+        ],
         HostRoot = "WhatsAppMonitorAssistant.Architecture.Tests.Fixtures.Compliant.Host",
         TransportNamespacePattern = @"^WhatsAppMonitorAssistant\.Architecture\.Tests\.Fixtures\.Compliant\..*\.Controllers(\.|$)",
     };

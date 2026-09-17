@@ -37,6 +37,13 @@ public sealed class FixtureViolationDetectionTests
             "AlphaFeatureHandler");
 
     [Fact]
+    public void Contract_depending_on_another_modules_feature_types_is_detected() =>
+        RuleAssertions.Flags(
+            BoundaryRules.CrossModuleApiMustUseContractsOnly(ModuleBoundaries.ViolatingFixtures),
+            TestArchitectures.Fixtures,
+            "AlphaFeatureLeakingContract");
+
+    [Fact]
     public void Contract_exposing_domain_or_persistence_types_is_detected() =>
         RuleAssertions.Flags(
             BoundaryRules.ContractsMustNotExposePersistenceTypes(ModuleBoundaries.ViolatingFixtures),
