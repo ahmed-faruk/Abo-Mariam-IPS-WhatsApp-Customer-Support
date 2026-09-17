@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: monitor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: monitor_ai
+      POSTGRES_USER: monitor_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor_app -d monitor_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

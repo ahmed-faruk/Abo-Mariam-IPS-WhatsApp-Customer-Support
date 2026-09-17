@@ -15,6 +15,16 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="Testcontainers.PostgreSql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Host.Web/Host.Web.csproj" />
+    <ProjectReference Include="../../src/Modules/Catalog/Catalog.csproj" />
+    <ProjectReference Include="../../src/Modules/Conversations/Conversations.csproj" />
+    <ProjectReference Include="../../src/Modules/Identity/Identity.csproj" />
+    <ProjectReference Include="../../src/Modules/Messaging/Messaging.csproj" />
+    <ProjectReference Include="../../src/Modules/Storefront/Storefront.csproj" />
   </ItemGroup>
 
   <ItemGroup>
