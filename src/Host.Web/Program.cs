@@ -3,7 +3,7 @@ using WhatsAppMonitorAssistant.Host.Web.Health;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddApplicationComposition();
+builder.Services.AddApplicationComposition(builder.Configuration);
 
 var app = builder.Build();
 

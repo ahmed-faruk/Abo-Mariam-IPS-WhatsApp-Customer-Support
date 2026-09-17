@@ -1,0 +1,95 @@
+# Persistence baseline (Issue #4)
+
+PostgreSQL 18 runs locally in Docker Desktop. One database, one schema and one migration
+history per persistent module, exactly as defined in `docs/TECHNICAL.md` sections 4, 6 and 7.
+
+## Required environment variables
+
+`compose.yaml` reads the database password from the environment. Nothing secret is committed.
+
+```bash
+export POSTGRES_PASSWORD='<local password>'
+```
+
+Docker Compose also reads a git-ignored `.env` file in the repository root, so exporting is only
+needed per shell. The application reads its connection string from configuration, in this order:
+
+```text
+ConnectionStrings__DefaultConnection   (environment variable)
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "<connection string>"
+src/Host.Web/appsettings.json          (local, password-free template)
+```
+
+The app refuses to start when the connection string is missing or blank.
+
+## Start and stop PostgreSQL
+
+```bash
+docker compose up -d
+docker compose ps          # postgres must report healthy
+docker compose down        # keeps the named volume
+docker compose down -v     # also drops the named volume and all data
+```
+
+The port is bound to `127.0.0.1:5432` only, so PostgreSQL is never exposed off the machine.
+
+## Migration commands
+
+Migrations are owned by the module that owns the schema. One `DbContext` per module:
+
+| Module | DbContext | Schema | Migrations folder |
+|---|---|---|---|
+| Catalog | `CatalogDbContext` | `catalog` | `src/Modules/Catalog/Infrastructure/Migrations` |
+| Conversations | `ConversationDbContext` | `conversations` | `src/Modules/Conversations/Infrastructure/Migrations` |
+| Messaging | `MessagingDbContext` | `messaging` | `src/Modules/Messaging/Infrastructure/Migrations` |
+| Storefront | `StorefrontDbContext` | `storefront` | `src/Modules/Storefront/Infrastructure/Migrations` |
+| Identity | `IdentityDbContext` | `identity` | `src/Modules/Identity/Infrastructure/Migrations` |
+
+Each module has a design-time factory, so a module can be both the project and the startup
+project for EF tools. No database connection is needed to scaffold a migration.
+
+Add a migration (replace the module, context and name):
+
+```bash
+dotnet ef migrations add <MigrationName> \
+  --project src/Modules/Catalog \
+  --startup-project src/Modules/Catalog \
+  --context CatalogDbContext \
+  --output-dir Infrastructure/Migrations
+```
+
+Apply migrations. EF CLI:
+
+```bash
+dotnet ef database update \
+  --project src/Modules/Catalog \
+  --startup-project src/Modules/Catalog \
+  --context CatalogDbContext
+```
+
+`dotnet ef` only connects when a database operation needs it. By default the design-time factory
+points at `127.0.0.1:5432/monitor_ai` with `monitor_app` and no password; set
+`MONITOR_DESIGN_TIME_CONNECTION` for a real target, for example:
+
+```bash
+MONITOR_DESIGN_TIME_CONNECTION='Host=127.0.0.1;Port=5432;Database=monitor_ai;Username=monitor_app;Password=<password>' \
+  dotnet ef database update --project src/Modules/Catalog --startup-project src/Modules/Catalog --context CatalogDbContext
+```
+
+Repeat per module. Migrations are never applied automatically at application startup and
+`EnsureCreated()` is not used outside disposable tests.
+
+After scaffolding, run `dotnet format WhatsAppMonitorAssistant.slnx --no-restore` once: EF writes
+generated files with a byte-order mark, and the repository `.editorconfig` requires plain UTF-8.
+
+## Run the Issue #4 integration tests
+
+The suite uses Testcontainers, starts its own PostgreSQL 18 container, creates a throwaway
+database per test and applies every module migration from an empty database.
+
+```bash
+docker compose up -d          # not required: Testcontainers starts its own container
+dotnet test tests/Integration.Tests
+```
+
+Docker Desktop must be running. The tests never use an in-memory or mocked database.
