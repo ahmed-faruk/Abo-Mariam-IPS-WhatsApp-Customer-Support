@@ -20,7 +20,7 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 schema: "conversations",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     whatsapp_number = table.Column<string>(type: "text", nullable: false),
                     display_name = table.Column<string>(type: "text", nullable: true),
@@ -29,7 +29,7 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_customer", x => x.Id);
+                    table.PrimaryKey("PK_customer", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -37,7 +37,7 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 schema: "conversations",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     customer_id = table.Column<long>(type: "bigint", nullable: false),
                     mode = table.Column<string>(type: "text", nullable: false, defaultValue: "AI"),
@@ -51,14 +51,14 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_conversation", x => x.Id);
+                    table.PrimaryKey("PK_conversation", x => x.id);
                     table.CheckConstraint("ck_conversation_mode", "mode IN ('AI','Human','Closed')");
                     table.ForeignKey(
                         name: "FK_conversation_customer_customer_id",
                         column: x => x.customer_id,
                         principalSchema: "conversations",
                         principalTable: "customer",
-                        principalColumn: "Id",
+                        principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
@@ -80,7 +80,7 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                         column: x => x.conversation_id,
                         principalSchema: "conversations",
                         principalTable: "conversation",
-                        principalColumn: "Id",
+                        principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
 

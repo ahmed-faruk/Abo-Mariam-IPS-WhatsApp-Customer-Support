@@ -20,7 +20,7 @@ namespace WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Migrations
                 schema: "storefront",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     key = table.Column<string>(type: "text", nullable: false),
                     answer_ar = table.Column<string>(type: "text", nullable: false),
@@ -30,7 +30,7 @@ namespace WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_business_info", x => x.Id);
+                    table.PrimaryKey("PK_business_info", x => x.id);
                 });
 
             migrationBuilder.CreateIndex(

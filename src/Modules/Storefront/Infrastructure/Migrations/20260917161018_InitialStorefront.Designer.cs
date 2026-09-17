@@ -12,7 +12,7 @@ using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Migrations
 {
     [DbContext(typeof(StorefrontDbContext))]
-    [Migration("20260917132037_InitialStorefront")]
+    [Migration("20260917161018_InitialStorefront")]
     partial class InitialStorefront
     {
         /// <inheritdoc />
@@ -30,7 +30,8 @@ namespace WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 

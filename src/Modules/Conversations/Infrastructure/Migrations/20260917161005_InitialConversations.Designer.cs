@@ -12,7 +12,7 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migrations
 {
     [DbContext(typeof(ConversationDbContext))]
-    [Migration("20260917132021_InitialConversations")]
+    [Migration("20260917161005_InitialConversations")]
     partial class InitialConversations
     {
         /// <inheritdoc />
@@ -30,7 +30,8 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -124,7 +125,8 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migratio
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 

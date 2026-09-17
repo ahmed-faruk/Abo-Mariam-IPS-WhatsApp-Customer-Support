@@ -13,7 +13,7 @@ internal sealed class CustomerConfiguration : IEntityTypeConfiguration<Customer>
         builder.ToTable("customer");
 
         builder.HasKey(customer => customer.Id);
-        builder.Property(customer => customer.Id).UseIdentityAlwaysColumn();
+        builder.Property(customer => customer.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(customer => customer.WhatsappNumber).HasColumnName("whatsapp_number").IsRequired();
         builder.HasIndex(customer => customer.WhatsappNumber).IsUnique();

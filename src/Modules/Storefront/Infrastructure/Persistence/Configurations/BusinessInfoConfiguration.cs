@@ -13,7 +13,7 @@ internal sealed class BusinessInfoConfiguration : IEntityTypeConfiguration<Busin
         builder.ToTable("business_info");
 
         builder.HasKey(info => info.Id);
-        builder.Property(info => info.Id).UseIdentityAlwaysColumn();
+        builder.Property(info => info.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(info => info.Key).HasColumnName("key").IsRequired();
         builder.HasIndex(info => info.Key).IsUnique();

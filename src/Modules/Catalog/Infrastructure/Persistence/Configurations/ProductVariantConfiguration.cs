@@ -19,7 +19,7 @@ internal sealed class ProductVariantConfiguration : IEntityTypeConfiguration<Pro
         });
 
         builder.HasKey(variant => variant.Id);
-        builder.Property(variant => variant.Id).UseIdentityAlwaysColumn();
+        builder.Property(variant => variant.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(variant => variant.ProductModelId).HasColumnName("product_model_id");
 

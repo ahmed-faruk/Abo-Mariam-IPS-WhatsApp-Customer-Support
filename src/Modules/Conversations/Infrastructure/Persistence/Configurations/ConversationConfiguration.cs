@@ -14,7 +14,7 @@ internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conve
             table.HasCheckConstraint("ck_conversation_mode", "mode IN ('AI','Human','Closed')"));
 
         builder.HasKey(conversation => conversation.Id);
-        builder.Property(conversation => conversation.Id).UseIdentityAlwaysColumn();
+        builder.Property(conversation => conversation.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(conversation => conversation.CustomerId).HasColumnName("customer_id");
 

@@ -14,7 +14,7 @@ internal sealed class ProductModelPortConfiguration : IEntityTypeConfiguration<P
             table.HasCheckConstraint("ck_port_count", "count BETWEEN 1 AND 16"));
 
         builder.HasKey(port => port.Id);
-        builder.Property(port => port.Id).UseIdentityAlwaysColumn();
+        builder.Property(port => port.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(port => port.ProductModelId).HasColumnName("product_model_id");
         builder.Property(port => port.PortType).HasColumnName("port_type").IsRequired();

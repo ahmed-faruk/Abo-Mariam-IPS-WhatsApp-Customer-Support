@@ -13,7 +13,7 @@ using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
 {
     [DbContext(typeof(CatalogDbContext))]
-    [Migration("20260917132014_InitialCatalog")]
+    [Migration("20260917160955_InitialCatalog")]
     partial class InitialCatalog
     {
         /// <inheritdoc />
@@ -31,7 +31,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -76,7 +77,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -172,7 +174,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -210,7 +213,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 

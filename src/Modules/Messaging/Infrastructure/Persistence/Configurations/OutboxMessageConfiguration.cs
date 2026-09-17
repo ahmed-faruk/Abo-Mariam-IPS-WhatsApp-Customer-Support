@@ -20,7 +20,7 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         });
 
         builder.HasKey(message => message.Id);
-        builder.Property(message => message.Id).UseIdentityAlwaysColumn();
+        builder.Property(message => message.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(message => message.ConversationId).HasColumnName("conversation_id");
         builder.Property(message => message.CustomerExternalId).HasColumnName("customer_external_id").IsRequired();

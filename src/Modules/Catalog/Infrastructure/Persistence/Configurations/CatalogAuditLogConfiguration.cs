@@ -13,7 +13,7 @@ internal sealed class CatalogAuditLogConfiguration : IEntityTypeConfiguration<Ca
         builder.ToTable("audit_log");
 
         builder.HasKey(entry => entry.Id);
-        builder.Property(entry => entry.Id).UseIdentityAlwaysColumn();
+        builder.Property(entry => entry.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(entry => entry.EntityType).HasColumnName("entity_type").IsRequired();
         builder.Property(entry => entry.EntityId).HasColumnName("entity_id");

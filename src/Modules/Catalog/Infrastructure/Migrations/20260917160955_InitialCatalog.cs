@@ -21,7 +21,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 schema: "catalog",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     entity_type = table.Column<string>(type: "text", nullable: false),
                     entity_id = table.Column<long>(type: "bigint", nullable: true),
@@ -33,7 +33,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_audit_log", x => x.Id);
+                    table.PrimaryKey("PK_audit_log", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -41,7 +41,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 schema: "catalog",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     model_code = table.Column<string>(type: "text", nullable: false),
                     brand = table.Column<string>(type: "text", nullable: false),
@@ -60,7 +60,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_product_model", x => x.Id);
+                    table.PrimaryKey("PK_product_model", x => x.id);
                     table.CheckConstraint("ck_model_panel", "panel_type IN ('IPS','TN','VA','OLED','Other')");
                     table.CheckConstraint("ck_model_refresh", "refresh_rate BETWEEN 24 AND 500");
                     table.CheckConstraint("ck_model_resolution", "resolution_width > 0 AND resolution_height > 0");
@@ -72,7 +72,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 schema: "catalog",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     product_model_id = table.Column<long>(type: "bigint", nullable: false),
                     port_type = table.Column<string>(type: "text", nullable: false),
@@ -80,14 +80,14 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_product_model_port", x => x.Id);
+                    table.PrimaryKey("PK_product_model_port", x => x.id);
                     table.CheckConstraint("ck_port_count", "count BETWEEN 1 AND 16");
                     table.ForeignKey(
                         name: "FK_product_model_port_product_model_product_model_id",
                         column: x => x.product_model_id,
                         principalSchema: "catalog",
                         principalTable: "product_model",
-                        principalColumn: "Id",
+                        principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
@@ -96,7 +96,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 schema: "catalog",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     product_model_id = table.Column<long>(type: "bigint", nullable: false),
                     sku = table.Column<string>(type: "text", nullable: false),
@@ -112,7 +112,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_product_variant", x => x.Id);
+                    table.PrimaryKey("PK_product_variant", x => x.id);
                     table.CheckConstraint("ck_variant_grade", "grade IN ('A','B','C')");
                     table.CheckConstraint("ck_variant_price", "selling_price >= 0");
                     table.CheckConstraint("ck_variant_quantity", "quantity >= 0");
@@ -122,7 +122,7 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Migrations
                         column: x => x.product_model_id,
                         principalSchema: "catalog",
                         principalTable: "product_model",
-                        principalColumn: "Id",
+                        principalColumn: "id",
                         onDelete: ReferentialAction.Restrict);
                 });
 

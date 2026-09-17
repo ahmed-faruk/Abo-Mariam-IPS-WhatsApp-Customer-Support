@@ -31,6 +31,23 @@ public sealed class SchemaOwnershipTests(PostgresContainerFixture postgres) : IA
         "storefront",
     ];
 
+    // Primary key column names as documented in docs/TECHNICAL.md section 6.
+    private static readonly IReadOnlyDictionary<string, string> ExpectedPrimaryKeyColumns =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["catalog.audit_log"] = "id",
+            ["catalog.product_model"] = "id",
+            ["catalog.product_model_port"] = "id",
+            ["catalog.product_variant"] = "id",
+            ["conversations.conversation"] = "id",
+            ["conversations.conversation_state"] = "conversation_id",
+            ["conversations.customer"] = "id",
+            ["messaging.inbox_message"] = "id",
+            ["messaging.outbox_message"] = "id",
+            ["messaging.webhook_envelope"] = "id",
+            ["storefront.business_info"] = "id",
+        };
+
     private DatabaseCatalogReader catalog = null!;
 
     public async Task InitializeAsync()
@@ -78,6 +95,29 @@ public sealed class SchemaOwnershipTests(PostgresContainerFixture postgres) : IA
                 entries.Count == 1,
                 $"Expected one migration history row in schema '{schema}' but found {entries.Count}.");
         }
+    }
+
+    [Fact]
+    public async Task Every_baseline_table_uses_its_documented_lowercase_primary_key_column()
+    {
+        var primaryKeys = await catalog.PrimaryKeyColumnsAsync();
+
+        Assert.Equal(
+            ExpectedPrimaryKeyColumns
+                .Select(entry => $"{entry.Key} -> {entry.Value}")
+                .OrderBy(description => description, StringComparer.Ordinal),
+            primaryKeys
+                .Where(key => !key.Table.EndsWith(".__ef_migrations", StringComparison.Ordinal))
+                .Select(key => $"{key.Table} -> {key.Column}")
+                .OrderBy(description => description, StringComparer.Ordinal));
+
+        // A quoted mixed-case "Id" column would mean the PascalCase C# property leaked into the schema.
+        var baselinePrimaryKeys = primaryKeys
+            .Where(key => !key.Table.EndsWith(".__ef_migrations", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.DoesNotContain(baselinePrimaryKeys, key => key.Column != key.Column.ToLowerInvariant());
+        Assert.DoesNotContain(baselinePrimaryKeys, key => string.Equals(key.Column, "Id", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -19,7 +19,7 @@ internal sealed class ProductModelConfiguration : IEntityTypeConfiguration<Produ
         });
 
         builder.HasKey(model => model.Id);
-        builder.Property(model => model.Id).UseIdentityAlwaysColumn();
+        builder.Property(model => model.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(model => model.ModelCode).HasColumnName("model_code").IsRequired();
         builder.HasIndex(model => model.ModelCode).IsUnique();

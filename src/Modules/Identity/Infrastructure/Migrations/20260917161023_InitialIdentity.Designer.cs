@@ -11,7 +11,7 @@ using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Migrations
 {
     [DbContext(typeof(IdentityDbContext))]
-    [Migration("20260917132044_InitialIdentity")]
+    [Migration("20260917161023_InitialIdentity")]
     partial class InitialIdentity
     {
         /// <inheritdoc />

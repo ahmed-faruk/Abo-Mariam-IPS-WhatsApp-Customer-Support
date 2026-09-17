@@ -12,7 +12,7 @@ using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
 {
     [DbContext(typeof(MessagingDbContext))]
-    [Migration("20260917132030_InitialMessaging")]
+    [Migration("20260917161011_InitialMessaging")]
     partial class InitialMessaging
     {
         /// <inheritdoc />
@@ -30,7 +30,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -129,7 +130,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 
@@ -239,7 +241,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
 

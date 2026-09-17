@@ -20,7 +20,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 schema: "messaging",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     conversation_id = table.Column<long>(type: "bigint", nullable: false),
                     customer_external_id = table.Column<string>(type: "text", nullable: false),
@@ -41,7 +41,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_outbox_message", x => x.Id);
+                    table.PrimaryKey("PK_outbox_message", x => x.id);
                     table.CheckConstraint("ck_outbox_body_hash", "body_hash = sha256(body::bytea)");
                     table.CheckConstraint("ck_outbox_sender", "sender IN ('AI','Agent','System')");
                     table.CheckConstraint("ck_outbox_status", "delivery_status IN ('Pending','Claimed','Sent','Failed','DeadLettered')");
@@ -52,7 +52,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 schema: "messaging",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     envelope_hash = table.Column<byte[]>(type: "bytea", nullable: false),
                     raw_body = table.Column<string>(type: "jsonb", nullable: false),
@@ -61,7 +61,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_webhook_envelope", x => x.Id);
+                    table.PrimaryKey("PK_webhook_envelope", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -69,7 +69,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 schema: "messaging",
                 columns: table => new
                 {
-                    Id = table.Column<long>(type: "bigint", nullable: false)
+                    id = table.Column<long>(type: "bigint", nullable: false)
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
                     envelope_id = table.Column<long>(type: "bigint", nullable: false),
                     provider_message_id = table.Column<string>(type: "text", nullable: false),
@@ -89,14 +89,14 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_inbox_message", x => x.Id);
+                    table.PrimaryKey("PK_inbox_message", x => x.id);
                     table.CheckConstraint("ck_inbox_status", "processing_status IN ('Pending','Claimed','Processed','Failed','DeadLettered')");
                     table.ForeignKey(
                         name: "FK_inbox_message_webhook_envelope_envelope_id",
                         column: x => x.envelope_id,
                         principalSchema: "messaging",
                         principalTable: "webhook_envelope",
-                        principalColumn: "Id",
+                        principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
@@ -104,7 +104,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 name: "ix_inbox_claim",
                 schema: "messaging",
                 table: "inbox_message",
-                columns: new[] { "run_after", "Id" },
+                columns: new[] { "run_after", "id" },
                 filter: "processing_status = 'Pending'");
 
             migrationBuilder.CreateIndex(
@@ -124,7 +124,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
                 name: "ix_outbox_claim",
                 schema: "messaging",
                 table: "outbox_message",
-                columns: new[] { "run_after", "Id" },
+                columns: new[] { "run_after", "id" },
                 filter: "delivery_status = 'Pending'");
 
             migrationBuilder.CreateIndex(

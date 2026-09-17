@@ -15,7 +15,7 @@ internal sealed class InboxMessageConfiguration : IEntityTypeConfiguration<Inbox
             "processing_status IN ('Pending','Claimed','Processed','Failed','DeadLettered')"));
 
         builder.HasKey(message => message.Id);
-        builder.Property(message => message.Id).UseIdentityAlwaysColumn();
+        builder.Property(message => message.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(message => message.EnvelopeId).HasColumnName("envelope_id");
 

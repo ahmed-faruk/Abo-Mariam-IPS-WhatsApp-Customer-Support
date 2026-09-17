@@ -13,7 +13,7 @@ internal sealed class WebhookEnvelopeConfiguration : IEntityTypeConfiguration<We
         builder.ToTable("webhook_envelope");
 
         builder.HasKey(envelope => envelope.Id);
-        builder.Property(envelope => envelope.Id).UseIdentityAlwaysColumn();
+        builder.Property(envelope => envelope.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(envelope => envelope.EnvelopeHash).HasColumnName("envelope_hash").IsRequired();
         builder.HasIndex(envelope => envelope.EnvelopeHash).IsUnique();

@@ -79,6 +79,18 @@ internal sealed class DatabaseCatalogReader(string connectionString)
             + "WHERE table_name = '__ef_migrations' "
             + $"AND table_type = 'BASE TABLE' AND table_schema NOT IN ({ExcludedSchemas})");
 
+    public async Task<IReadOnlyList<PrimaryKeyColumnInfo>> PrimaryKeyColumnsAsync()
+    {
+        var rows = await RowsAsync(
+            "SELECT tc.table_schema || '.' || tc.table_name, kcu.column_name "
+            + "FROM information_schema.table_constraints tc "
+            + "JOIN information_schema.key_column_usage kcu "
+            + "ON kcu.constraint_schema = tc.constraint_schema AND kcu.constraint_name = tc.constraint_name "
+            + $"WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema NOT IN ({ExcludedSchemas})");
+
+        return [.. rows.Select(row => new PrimaryKeyColumnInfo(Table: row[0], Column: row[1]))];
+    }
+
     public Task<IReadOnlyList<string>> MigrationHistoryEntriesAsync(string schema) =>
         ColumnAsync($"SELECT \"MigrationId\" FROM {schema}.__ef_migrations ORDER BY \"MigrationId\"");
 
@@ -149,3 +161,5 @@ internal sealed record ForeignKeyInfo(
     string ParentSchema,
     string ParentTable,
     string Name);
+
+internal sealed record PrimaryKeyColumnInfo(string Table, string Column);
