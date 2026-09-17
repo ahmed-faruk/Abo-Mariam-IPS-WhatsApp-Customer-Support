@@ -1,1 +1,20 @@
 .DS_Store
+
+# Build output
+bin/
+obj/
+[Bb]uild/
+[Ll]og/
+TestResults/
+artifacts/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Local secrets
+.env
+.env.*
