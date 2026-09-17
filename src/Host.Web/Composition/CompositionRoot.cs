@@ -1,6 +1,7 @@
 using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
+using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Persistence;
 
@@ -35,7 +36,7 @@ public static class CompositionRoot
 
         services.AddCatalogPersistence(connectionString);
         services.AddConversationPersistence(connectionString);
-        services.AddMessagingPersistence(connectionString);
+        services.AddMessagingModule(connectionString);
         services.AddStorefrontPersistence(connectionString);
         services.AddIdentityPersistence(connectionString);
 
