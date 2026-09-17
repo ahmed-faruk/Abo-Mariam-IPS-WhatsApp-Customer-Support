@@ -3,24 +3,38 @@
 PostgreSQL 18 runs locally in Docker Desktop. One database, one schema and one migration
 history per persistent module, exactly as defined in `docs/TECHNICAL.md` sections 4, 6 and 7.
 
-## Required environment variables
+## Local setup: one password, two places
 
-`compose.yaml` reads the database password from the environment. Nothing secret is committed.
+Docker Compose and the application both need the same password. Compose reads
+`POSTGRES_PASSWORD`; the application reads its own connection string. Set both in the shell from a
+single value so they cannot drift:
 
 ```bash
+# The password for the `monitor_app` role inside the container.
 export POSTGRES_PASSWORD='<local password>'
+
+# The complete connection string the application connects with, using the same password.
+export ConnectionStrings__DefaultConnection="Host=127.0.0.1;Port=5432;Database=monitor_ai;Username=monitor_app;Password=$POSTGRES_PASSWORD"
 ```
 
-Docker Compose also reads a git-ignored `.env` file in the repository root, so exporting is only
-needed per shell. The application reads its connection string from configuration, in this order:
+`compose.yaml` interpolates `POSTGRES_PASSWORD` for the PostgreSQL container. The application reads
+its connection string from configuration, in this order:
 
 ```text
-ConnectionStrings__DefaultConnection   (environment variable)
+ConnectionStrings__DefaultConnection   (environment variable, used above)
 dotnet user-secrets set "ConnectionStrings:DefaultConnection" "<connection string>"
 src/Host.Web/appsettings.json          (local, password-free template)
 ```
 
-The app refuses to start when the connection string is missing or blank.
+`ConnectionStrings__DefaultConnection` replaces the whole value from `appsettings.json`, so it must
+include the password; the password-free template is a fallback only. The app refuses to start when
+the connection string is missing or blank.
+
+Nothing secret is committed. Docker Compose also reads a git-ignored `.env` file in the repository
+root, so exporting is only needed per shell; .NET does not read `.env`, so the application still
+needs the environment variable, or user-secrets. To use user-secrets instead, run
+`dotnet user-secrets init --project src/Host.Web` once (the project has no secrets id yet), then set
+the same complete connection string with `dotnet user-secrets set`.
 
 ## Start and stop PostgreSQL
 
@@ -72,7 +86,7 @@ points at `127.0.0.1:5432/monitor_ai` with `monitor_app` and no password; set
 `MONITOR_DESIGN_TIME_CONNECTION` for a real target, for example:
 
 ```bash
-MONITOR_DESIGN_TIME_CONNECTION='Host=127.0.0.1;Port=5432;Database=monitor_ai;Username=monitor_app;Password=<password>' \
+MONITOR_DESIGN_TIME_CONNECTION="Host=127.0.0.1;Port=5432;Database=monitor_ai;Username=monitor_app;Password=$POSTGRES_PASSWORD" \
   dotnet ef database update --project src/Modules/Catalog --startup-project src/Modules/Catalog --context CatalogDbContext
 ```
 
