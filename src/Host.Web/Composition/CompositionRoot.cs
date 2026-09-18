@@ -1,4 +1,5 @@
 using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure;
+using WhatsAppMonitorAssistant.Modules.Catalog.Features.SearchProducts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
@@ -34,7 +35,11 @@ public static class CompositionRoot
                 + "environment variable; never commit credentials.");
         }
 
-        services.AddCatalogModule(connectionString);
+        // The tolerated distances are explicit deployment configuration: the project baseline defines
+        // a soft budget tolerance and a size tolerance but no values for them, so an unset one fails
+        // startup validation naming the setting instead of silently applying an invented default.
+        services.AddCatalogModule(connectionString, options =>
+            configuration.GetSection(CatalogSearchOptions.ConfigurationSectionName).Bind(options));
         services.AddConversationPersistence(connectionString);
         services.AddMessagingModule(connectionString);
         services.AddStorefrontPersistence(connectionString);

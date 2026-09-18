@@ -16,13 +16,7 @@ internal sealed class SearchProductsHandler(
         ProductSearchQuery query,
         CancellationToken cancellationToken = default)
     {
-        var criteria = CatalogSearchCriteriaFactory.From(
-            query,
-            options.SizeToleranceInches,
-            options.SoftBudgetTolerance,
-            options.MaxResults);
-
-        return reader.SearchAsync(criteria, cancellationToken);
+        return reader.SearchAsync(BuildCriteria(query), cancellationToken);
     }
 
     public async Task<ProductRecommendation?> FindByModelCodeAsync(
@@ -34,14 +28,22 @@ internal sealed class SearchProductsHandler(
         // The model-code filter is a hard filter, so an exact lookup is the documented search with
         // one requested result: it can never return a different code, and it never returns a model
         // whose variants are inactive or out of stock.
-        var criteria = CatalogSearchCriteriaFactory.From(
-            new ProductSearchQuery { ModelCode = modelCode, Limit = 1 },
-            options.SizeToleranceInches,
-            options.SoftBudgetTolerance,
-            options.MaxResults);
-
-        var recommendations = await reader.SearchAsync(criteria, cancellationToken);
+        var recommendations = await reader.SearchAsync(
+            BuildCriteria(new ProductSearchQuery { ModelCode = modelCode, Limit = 1 }),
+            cancellationToken);
 
         return recommendations.Count == 0 ? null : recommendations[0];
     }
+
+    /// <summary>
+    /// The tolerances come from the explicit configuration only. Validation rejects a missing value at
+    /// startup, so a host that skipped validation is rejected here instead of searching with an
+    /// invented tolerance.
+    /// </summary>
+    private CatalogSearchCriteria BuildCriteria(ProductSearchQuery query) =>
+        CatalogSearchCriteriaFactory.From(
+            query,
+            options.RequiredSizeToleranceInches,
+            options.RequiredSoftBudgetTolerance,
+            options.MaxResults);
 }

@@ -14,6 +14,15 @@ namespace WhatsAppMonitorAssistant.Integration.Tests.Catalog;
 /// </summary>
 public abstract class CatalogFixture(PostgresContainerFixture postgres) : IAsyncLifetime
 {
+    /// <summary>
+    /// The tolerances every test states explicitly. They are test inputs, not module defaults: the
+    /// production policy has no tolerance defaults at all, so a test that needs another value passes it
+    /// through <see cref="StartHost"/>.
+    /// </summary>
+    internal const decimal TestSizeToleranceInches = 0.4m;
+
+    internal const decimal TestSoftBudgetTolerance = 0.25m;
+
     internal string ConnectionString { get; private set; } = string.Empty;
 
     internal DatabaseCatalogReader Catalog { get; private set; } = null!;
@@ -27,7 +36,13 @@ public abstract class CatalogFixture(PostgresContainerFixture postgres) : IAsync
     public Task DisposeAsync() => Task.CompletedTask;
 
     internal CatalogHost StartHost(Action<CatalogSearchOptions>? configure = null) =>
-        CatalogHost.Start(ConnectionString, configure);
+        CatalogHost.Start(ConnectionString, options =>
+        {
+            options.SizeToleranceInches = TestSizeToleranceInches;
+            options.SoftBudgetTolerance = TestSoftBudgetTolerance;
+
+            configure?.Invoke(options);
+        });
 
     internal static ICatalogSearch Search(IServiceProvider services) =>
         services.GetRequiredService<ICatalogSearch>();

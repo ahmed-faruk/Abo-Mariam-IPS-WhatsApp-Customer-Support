@@ -9,8 +9,14 @@ namespace WhatsAppMonitorAssistant.Unit.Tests.Catalog;
 /// </summary>
 public sealed class CatalogSearchCriteriaFactoryTests
 {
-    private const decimal SizeTolerance = 0.5m;
-    private const decimal SoftTolerance = 0.15m;
+    /// <summary>
+    /// Explicit test inputs. The module itself has no tolerance values, so every test that exercises
+    /// tolerance behavior states the value it expects to be applied.
+    /// </summary>
+    private const decimal SizeTolerance = 0.4m;
+
+    private const decimal SoftTolerance = 0.2m;
+
     private const int MaxResults = 20;
 
     [Fact]
@@ -120,8 +126,59 @@ public sealed class CatalogSearchCriteriaFactoryTests
     {
         var criteria = Build(new ProductSearchQuery { Budget = ProductBudget.Soft(3000m) });
 
-        Assert.Equal(3450m, criteria.BudgetMax);
+        Assert.Equal(3600m, criteria.BudgetMax);
         Assert.Equal(3000m, criteria.BudgetTarget);
+    }
+
+    [Theory]
+    [InlineData(0.0, 3000)]
+    [InlineData(0.05, 3150)]
+    [InlineData(0.1, 3300)]
+    [InlineData(0.2, 3600)]
+    [InlineData(0.5, 4500)]
+    [InlineData(0.999, 5997)]
+    public void A_soft_budget_uses_exactly_the_configured_tolerance(double tolerance, decimal expectedMax)
+    {
+        var criteria = CatalogSearchCriteriaFactory.From(
+            new ProductSearchQuery { Budget = ProductBudget.Soft(3000m) },
+            SizeTolerance,
+            (decimal)tolerance,
+            MaxResults);
+
+        Assert.Equal(expectedMax, criteria.BudgetMax);
+        Assert.Equal(3000m, criteria.BudgetTarget);
+    }
+
+    [Theory]
+    [InlineData(0.0, 2500)]
+    [InlineData(0.2, 2500)]
+    [InlineData(0.999, 2500)]
+    public void A_hard_budget_ignores_the_soft_tolerance_completely(double tolerance, decimal expectedMax)
+    {
+        var criteria = CatalogSearchCriteriaFactory.From(
+            new ProductSearchQuery { Budget = ProductBudget.Hard(2500m) },
+            SizeTolerance,
+            (decimal)tolerance,
+            MaxResults);
+
+        Assert.Equal(expectedMax, criteria.BudgetMax);
+    }
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(0.1)]
+    [InlineData(0.4)]
+    [InlineData(0.75)]
+    public void The_size_tolerance_reaches_the_criteria_exactly_as_configured(double tolerance)
+    {
+        var criteria = CatalogSearchCriteriaFactory.From(
+            new ProductSearchQuery { SizeInches = 24m },
+            (decimal)tolerance,
+            SoftTolerance,
+            MaxResults);
+
+        Assert.Equal((decimal)tolerance, criteria.SizeToleranceInches);
+        Assert.Equal(24m, criteria.SizeInches);
     }
 
     [Fact]

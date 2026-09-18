@@ -9,7 +9,8 @@ namespace WhatsAppMonitorAssistant.Unit.Tests.Catalog;
 /// </summary>
 public sealed class BudgetRulesTests
 {
-    private const decimal Tolerance = 0.15m;
+    /// <summary>An explicit test input; the module defines no tolerance of its own.</summary>
+    private const decimal Tolerance = 0.2m;
 
     [Fact]
     public void A_hard_budget_is_a_ceiling_that_no_tolerance_can_raise()
@@ -38,7 +39,7 @@ public sealed class BudgetRulesTests
         var scope = BudgetRules.Resolve(ProductBudget.Soft(3000m), Tolerance);
 
         Assert.Null(scope.Min);
-        Assert.Equal(3450m, scope.Max);
+        Assert.Equal(3600m, scope.Max);
     }
 
     [Fact]

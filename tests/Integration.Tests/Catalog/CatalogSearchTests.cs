@@ -88,13 +88,37 @@ public sealed class CatalogSearchTests(PostgresContainerFixture postgres) : Cata
         var twentySix = await AddModelAsync("TOO-SMALL", sizeInches: 22m);
         await AddVariantAsync(twentySix, "SKU-TOO-SMALL");
 
-        await using var host = StartHost(options => options.SizeToleranceInches = 0.5m);
+        await using var host = StartHost(options => options.SizeToleranceInches = 0.25m);
         await using var scope = host.CreateScope();
 
         var result = Assert.Single(await Search(scope.ServiceProvider).SearchAsync(
             new ProductSearchQuery { SizeInches = 24m }));
 
         Assert.Equal(twentyThreePointEight, result.ModelId);
+    }
+
+    [Fact]
+    public async Task Changing_the_configured_size_tolerance_changes_the_result_deterministically()
+    {
+        var twentyThreePointEight = await AddModelAsync("TOLERATED", sizeInches: 23.8m);
+        await AddVariantAsync(twentyThreePointEight, "SKU-TOLERATED");
+
+        await using var strict = StartHost(options => options.SizeToleranceInches = 0.1m);
+        await using var permissive = StartHost(options => options.SizeToleranceInches = 0.25m);
+
+        await using (var scope = strict.CreateScope())
+        {
+            // 0.1 inches does not reach a 23.8 inch panel asked for as 24.
+            Assert.Empty(await Search(scope.ServiceProvider).SearchAsync(new ProductSearchQuery { SizeInches = 24m }));
+        }
+
+        await using (var scope = permissive.CreateScope())
+        {
+            Assert.Equal(
+                twentyThreePointEight,
+                Assert.Single(await Search(scope.ServiceProvider).SearchAsync(
+                    new ProductSearchQuery { SizeInches = 24m })).ModelId);
+        }
     }
 
     [Fact]
@@ -219,7 +243,8 @@ public sealed class CatalogSearchTests(PostgresContainerFixture postgres) : Cata
         var aboveCeiling = await AddModelAsync("ABOVE-CEILING");
         await AddVariantAsync(aboveCeiling, "SKU-ABOVE-CEILING", price: 2500.01m);
 
-        await using var host = StartHost(options => options.SoftBudgetTolerance = 0.5m);
+        // A soft tolerance is configured as wide as it can be, and it still cannot widen the ceiling.
+        await using var host = StartHost(options => options.SoftBudgetTolerance = 0.9m);
         await using var scope = host.CreateScope();
 
         var result = Assert.Single(await Search(scope.ServiceProvider).SearchAsync(
@@ -233,18 +258,46 @@ public sealed class CatalogSearchTests(PostgresContainerFixture postgres) : Cata
     public async Task A_soft_budget_widens_the_search_by_the_configured_tolerance()
     {
         var inside = await AddModelAsync("INSIDE-TOKEN");
-        await AddVariantAsync(inside, "SKU-INSIDE-TOKEN", price: 3400m);
+        await AddVariantAsync(inside, "SKU-INSIDE-TOKEN", price: 3500m);
 
         var outside = await AddModelAsync("OUTSIDE-TOKEN");
-        await AddVariantAsync(outside, "SKU-OUTSIDE-TOKEN", price: 3500m);
+        await AddVariantAsync(outside, "SKU-OUTSIDE-TOKEN", price: 3700m);
 
-        await using var host = StartHost(options => options.SoftBudgetTolerance = 0.15m);
+        await using var host = StartHost(options => options.SoftBudgetTolerance = 0.2m);
         await using var scope = host.CreateScope();
 
         var result = Assert.Single(await Search(scope.ServiceProvider).SearchAsync(
             new ProductSearchQuery { Budget = ProductBudget.Soft(3000m) }));
 
+        // The configured 0.2 widens the stated 3000 to exactly 3600, so the 3500 model is eligible
+        // while the 3700 model is not.
         Assert.Equal(inside, result.ModelId);
+    }
+
+    [Fact]
+    public async Task Changing_the_configured_soft_tolerance_changes_eligibility_deterministically()
+    {
+        var aboveTheStrictCeiling = await AddModelAsync("BETWEEN-TOLERANCES");
+        await AddVariantAsync(aboveTheStrictCeiling, "SKU-BETWEEN-TOLERANCES", price: 3200m);
+
+        await using var strict = StartHost(options => options.SoftBudgetTolerance = 0.05m);
+        await using var permissive = StartHost(options => options.SoftBudgetTolerance = 0.1m);
+
+        await using (var scope = strict.CreateScope())
+        {
+            // A 0.05 tolerance widens 3000 to 3150, which excludes a 3200 model.
+            Assert.Empty(await Search(scope.ServiceProvider).SearchAsync(
+                new ProductSearchQuery { Budget = ProductBudget.Soft(3000m) }));
+        }
+
+        await using (var scope = permissive.CreateScope())
+        {
+            // A 0.1 tolerance widens 3000 to 3300, which includes the same model.
+            Assert.Equal(
+                aboveTheStrictCeiling,
+                Assert.Single(await Search(scope.ServiceProvider).SearchAsync(
+                    new ProductSearchQuery { Budget = ProductBudget.Soft(3000m) })).ModelId);
+        }
     }
 
     [Fact]
