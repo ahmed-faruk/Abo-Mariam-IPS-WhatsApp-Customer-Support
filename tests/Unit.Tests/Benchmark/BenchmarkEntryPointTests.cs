@@ -246,6 +246,167 @@ public sealed class BenchmarkEntryPointTests
         }
     }
 
+    [Fact]
+    public async Task Warmup_reports_success_only_after_schema_valid_replies_and_writes_no_artifacts()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var services = BenchmarkFixtures.CreateServices(root, out var output)
+                with
+            {
+                CreateGateway = (_, _, _) => new ValidOnlyGateway(),
+            };
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(
+                ["warmup", "--model", "qwen3.5:2b-q4_K_M"],
+                services,
+                CancellationToken.None);
+
+            Assert.Equal(ExitCodes.Success, exitCode);
+            Assert.Contains("warm-up 1:", output.ToString(), StringComparison.Ordinal);
+            Assert.Contains("warm-up 2:", output.ToString(), StringComparison.Ordinal);
+            Assert.Contains("Model is warm.", output.ToString(), StringComparison.Ordinal);
+            Assert.Equal(string.Empty, services.Error.ToString());
+            Assert.False(Directory.Exists(Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "results")));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Warmup_that_times_out_fails_without_claiming_the_model_is_warm()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var services = BenchmarkFixtures.CreateServices(root, out var output)
+                with
+            {
+                CreateGateway = (_, _, _) => new TimedOutGateway(),
+            };
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(
+                ["warmup", "--model", "qwen3.5:2b-q4_K_M"],
+                services,
+                CancellationToken.None);
+
+            Assert.Equal(ExitCodes.InfrastructureFailure, exitCode);
+            Assert.DoesNotContain("Model is warm.", output.ToString(), StringComparison.Ordinal);
+            Assert.Contains("warm-up failed", services.Error.ToString(), StringComparison.Ordinal);
+            Assert.Contains("timed out", services.Error.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Warmup_that_stays_schema_invalid_fails_without_claiming_the_model_is_warm()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var services = BenchmarkFixtures.CreateServices(root, out var output)
+                with
+            {
+                CreateGateway = (_, _, _) => new InvalidOutputGateway(),
+            };
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(
+                ["warmup", "--model", "qwen3.5:2b-q4_K_M"],
+                services,
+                CancellationToken.None);
+
+            Assert.Equal(ExitCodes.InfrastructureFailure, exitCode);
+            Assert.DoesNotContain("Model is warm.", output.ToString(), StringComparison.Ordinal);
+            Assert.Contains("not schema-valid", services.Error.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Warmup_retries_a_schema_invalid_reply_once_before_succeeding()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var gateway = new ScriptedWarmupGateway(
+                FixtureNluGateway.InvalidOutput,
+                FixtureNluGateway.MinimalValidOutput,
+                FixtureNluGateway.MinimalValidOutput);
+            var services = BenchmarkFixtures.CreateServices(root, out var output)
+                with
+            {
+                CreateGateway = (_, _, _) => gateway,
+            };
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(
+                ["warmup", "--model", "qwen3.5:2b-q4_K_M"],
+                services,
+                CancellationToken.None);
+
+            Assert.Equal(ExitCodes.Success, exitCode);
+            Assert.Equal(3, gateway.Requests.Count);
+            Assert.True(gateway.Requests[1].IsCorrection);
+            Assert.Contains("Model is warm.", output.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class TimedOutGateway : IOllamaGateway
+    {
+        public Task<OllamaHealth> CheckAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new OllamaHealth("test-ollama", ["qwen3.5:2b-q4_K_M"]));
+
+        public Task<NluTransportResponse> SendAsync(NluTransportRequest request, CancellationToken cancellationToken) =>
+            throw new OllamaTransportException("Ollama did not answer within 20 seconds.");
+    }
+
+    private sealed class InvalidOutputGateway : IOllamaGateway
+    {
+        public Task<OllamaHealth> CheckAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new OllamaHealth("test-ollama", ["qwen3.5:2b-q4_K_M"]));
+
+        public Task<NluTransportResponse> SendAsync(NluTransportRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(new NluTransportResponse { Content = FixtureNluGateway.InvalidOutput });
+    }
+
+    private sealed class ScriptedWarmupGateway : IOllamaGateway
+    {
+        private readonly Queue<string> _responses;
+
+        public ScriptedWarmupGateway(params string[] responses)
+        {
+            _responses = new Queue<string>(responses);
+        }
+
+        public List<NluTransportRequest> Requests { get; } = [];
+
+        public Task<OllamaHealth> CheckAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new OllamaHealth("test-ollama", ["qwen3.5:2b-q4_K_M"]));
+
+        public Task<NluTransportResponse> SendAsync(NluTransportRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+
+            return Task.FromResult(new NluTransportResponse { Content = _responses.Dequeue() });
+        }
+    }
+
     private sealed class ValidOnlyGateway : IOllamaGateway
     {
         public Task<OllamaHealth> CheckAsync(CancellationToken cancellationToken) =>

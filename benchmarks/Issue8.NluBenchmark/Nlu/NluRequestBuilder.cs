@@ -6,7 +6,9 @@ namespace WhatsAppMonitorAssistant.Benchmarks.Nlu;
 /// <summary>
 /// Builds the Ollama <c>/api/chat</c> body documented in docs/TECHNICAL.md sections 8.2 and
 /// 8.3: schema-constrained JSON output, <c>stream: false</c>, the configured temperature and
-/// the configured context target.
+/// the configured context target. Thinking is switched off explicitly: this benchmark measures
+/// short structured NLU, and thinking-enabled replies on the x86 Mac made every warm-up request
+/// time out at the configured 20 seconds.
 /// </summary>
 public sealed class NluRequestBuilder
 {
@@ -53,6 +55,7 @@ public sealed class NluRequestBuilder
             ["model"] = parameters.Model,
             ["messages"] = messages,
             ["stream"] = false,
+            ["think"] = false,
             ["format"] = JsonNode.Parse(_schema.GetRawText()),
             ["options"] = new JsonObject
             {

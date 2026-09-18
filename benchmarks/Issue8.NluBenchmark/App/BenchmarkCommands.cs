@@ -9,6 +9,8 @@ namespace WhatsAppMonitorAssistant.Benchmarks.Nlu;
 /// </summary>
 public static class BenchmarkCommands
 {
+    private const string OllamaTimeoutPrefix = "Ollama did not answer within";
+
     public static async Task<int> ExecuteAsync(
         BenchmarkInvocation invocation,
         BenchmarkServices services,
@@ -124,13 +126,55 @@ public static class BenchmarkCommands
 
             var execution = await analyzer.AnalyzeAsync(testCase, cancellationToken).ConfigureAwait(false);
 
+            if (!execution.SchemaValid)
+            {
+                throw new WarmupException(
+                    $"warm-up {index + 1} of {warmupInputs.Length} failed: {DescribeWarmupFailure(execution)} "
+                    + $"after {BenchmarkEvaluator.FormatSeconds(execution.TotalMilliseconds)} s. "
+                    + $"The model is not warm and no measured run may start from this state.");
+            }
+
             services.Output.WriteLine(
-                $"warm-up {index + 1}: {BenchmarkEvaluator.FormatSeconds(execution.FinalAttemptMilliseconds)} s · "
-                + $"schema {(execution.SchemaValid ? "valid" : "invalid")}");
+                $"warm-up {index + 1}: {BenchmarkEvaluator.FormatSeconds(execution.FinalAttemptMilliseconds)} s · schema valid");
         }
 
         services.Output.WriteLine("Model is warm. Warm-up latency is never part of the benchmark metrics.");
         return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// Names the real reason a warm-up request failed: transport/timeout when Ollama never
+    /// answered, otherwise the schema problems the structured reply kept violating.
+    /// </summary>
+    private static string DescribeWarmupFailure(NluCaseExecution execution)
+    {
+        var lastAttempt = execution.Attempts[^1];
+
+        if (lastAttempt.TransportFailure is not null)
+        {
+            return lastAttempt.TransportFailure.StartsWith(OllamaTimeoutPrefix, StringComparison.Ordinal)
+                ? "Ollama timed out on every attempt"
+                : $"Ollama request failed ({lastAttempt.TransportFailure})";
+        }
+
+        string[] errors;
+
+        if (lastAttempt.SchemaErrors.Length > 0)
+        {
+            errors = lastAttempt.SchemaErrors;
+        }
+        else if (execution.FailureReason is { } reason)
+        {
+            errors = [reason];
+        }
+        else
+        {
+            errors = [];
+        }
+
+        return errors.Length == 0
+            ? "the reply was not schema-valid"
+            : $"the reply was not schema-valid ({string.Join("; ", errors)})";
     }
 
     private static async Task<int> RunCommandAsync(

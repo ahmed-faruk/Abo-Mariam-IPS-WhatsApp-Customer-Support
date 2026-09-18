@@ -57,7 +57,8 @@ public static class NluContract
         ["Programming", "Office", "Gaming", "Design", "CCTV"];
 
     public const string SchemaVersion = "nlu-output-v1";
-    public const string PromptVersion = "nlu-system-prompt-v1";
+    /// <summary>v2: thinking disabled and the documented intent/field/budget vocabulary spelled out.</summary>
+    public const string PromptVersion = "nlu-system-prompt-v2";
     public const string BenchmarkFormatVersion = "1";
     public const string HarnessVersion = "issue8-nlu-benchmark-1";
     public const string SourceDocument = "docs/TECHNICAL.md v3.2 section 8/9/28, docs/PLAN.md v3.2 section 13.3";

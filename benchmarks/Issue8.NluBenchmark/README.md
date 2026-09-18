@@ -80,22 +80,40 @@ be presented as measurements.
 
 ## Ollama request shape
 
-`/api/chat` with `stream: false`, `format` set to the committed schema, `options.temperature = 0`
-and `options.num_ctx = 4096`, over a short fixed structured-NLU system prompt that never asks
-for prose, prices, stock or business policy. The default timeout is 20 s and can be overridden
-per command with `--timeout-seconds` if the local machine proves it necessary. When Ollama
-returns them, `total_duration`, `load_duration`, `prompt_eval_count`, `prompt_eval_duration`,
+`/api/chat` with `stream: false`, **`think: false`**, `format` set to the committed schema,
+`options.temperature = 0` and `options.num_ctx = 4096`, over a short fixed structured-NLU system
+prompt that never asks for prose, prices, stock or business policy. Every measured path (first
+attempt and the corrective retry) sends `think: false`: this is short structured NLU, and
+thinking-enabled replies on the x86 Mac did not return inside the 20 s timeout. The default
+timeout is 20 s and can be overridden per command with `--timeout-seconds`. When Ollama returns
+them, `total_duration`, `load_duration`, `prompt_eval_count`, `prompt_eval_duration`,
 `eval_count` and `eval_duration` are stored with each attempt.
 
 ## Warm-up and run procedure
 
 1. Start Ollama and confirm the model tag exists (`warmup` does both).
 2. Run `warmup`: it sends exactly two small structured requests and prints their latency.
+   It succeeds only when both requests return schema-valid structured output; a timeout,
+   transport error, invalid JSON or schema-invalid reply after the one allowed retry prints the
+   reason, exits `3` and never prints `Model is warm.`, so a measured pass cannot start from a
+   model that is not actually answering.
 3. Run the complete dataset twice (`run1`, then `run2`) without restarting Ollama.
 4. Keep both raw artifacts, then generate the report from both.
 
 Warm-up requests are never part of the metrics. `run` treats its own process as warm because
 `warmup` already loaded the model; do not restart Ollama between the two passes.
+
+## System prompt
+
+The prompt is short but explicit about the documented contract: the ten intent names spelled
+exactly as in docs/TECHNICAL.md section 9 (never `product_search`-style aliases), field ownership
+for every documented field, the curated use-case vocabulary, and the budget wording that means
+Hard (`مش عايز أعدي`, `بحد أقصى`, `أقصى حاجة`, `مايزدش عن`), Soft (`في حدود`, `حوالي`), Range or None.
+
+It contains no dataset case and no expected output, and the harness contains no rule that
+rewrites model output to make a case pass. Normalization exists only in the comparison layer
+(trim, whitespace collapse, case folding, port/grade sets, numeric equality), so the benchmark
+measures whether the model follows the prompt rather than whether the harness repairs it.
 
 ## Scoring rules
 
