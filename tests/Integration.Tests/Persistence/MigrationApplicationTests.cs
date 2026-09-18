@@ -7,14 +7,14 @@ namespace WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 [Collection(PostgresCollection.Name)]
 public sealed class MigrationApplicationTests(PostgresContainerFixture postgres) : IAsyncLifetime
 {
-    private static readonly IReadOnlyDictionary<string, string> ExpectedInitialMigrations =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ExpectedMigrations =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
-            ["CatalogDbContext"] = "InitialCatalog",
-            ["ConversationDbContext"] = "InitialConversations",
-            ["MessagingDbContext"] = "InitialMessaging",
-            ["StorefrontDbContext"] = "InitialStorefront",
-            ["IdentityDbContext"] = "InitialIdentity",
+            ["CatalogDbContext"] = ["InitialCatalog"],
+            ["ConversationDbContext"] = ["InitialConversations"],
+            ["MessagingDbContext"] = ["InitialMessaging", "AddClaimLeasesAndUtf8BodyHash"],
+            ["StorefrontDbContext"] = ["InitialStorefront"],
+            ["IdentityDbContext"] = ["InitialIdentity"],
         };
 
     private string connectionString = string.Empty;
@@ -48,14 +48,14 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
         var applied = await ModulePersistence.AppliedMigrationsAsync(connectionString);
 
         Assert.Equal(
-            ExpectedInitialMigrations.Keys.OrderBy(name => name, StringComparer.Ordinal),
+            ExpectedMigrations.Keys.OrderBy(name => name, StringComparer.Ordinal),
             applied.Keys.OrderBy(name => name, StringComparer.Ordinal));
 
         foreach (var (contextName, migrations) in applied)
         {
-            var migration = Assert.Single(migrations);
-
-            Assert.EndsWith($"_" + ExpectedInitialMigrations[contextName], migration, StringComparison.Ordinal);
+            // A migration id is "<timestamp>_<name>", and every module applies its migrations in
+            // order, so a corrective migration is asserted here instead of being appended silently.
+            Assert.Equal(ExpectedMigrations[contextName], migrations.Select(ToMigrationName));
         }
     }
 
@@ -71,4 +71,7 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
         Assert.Equal(firstPass, secondPass);
         Assert.Single(secondPass);
     }
+
+    private static string ToMigrationName(string migrationId) =>
+        migrationId[(migrationId.IndexOf('_', StringComparison.Ordinal) + 1)..];
 }

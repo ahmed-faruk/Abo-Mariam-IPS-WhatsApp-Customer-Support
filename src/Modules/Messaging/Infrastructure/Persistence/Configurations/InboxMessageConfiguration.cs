@@ -38,6 +38,8 @@ internal sealed class InboxMessageConfiguration : IEntityTypeConfiguration<Inbox
         builder.Property(message => message.Attempts).HasColumnName("attempts").HasDefaultValue(0);
         builder.Property(message => message.RunAfter).HasColumnName("run_after").HasDefaultValueSql("now()");
         builder.Property(message => message.ClaimedAt).HasColumnName("claimed_at");
+        builder.Property(message => message.ClaimToken).HasColumnName("claim_token");
+        builder.Property(message => message.ClaimExpiresAt).HasColumnName("claim_expires_at");
         builder.Property(message => message.ProcessedAt).HasColumnName("processed_at");
         builder.Property(message => message.LastError).HasColumnName("last_error");
         builder.Property(message => message.ReceivedAt).HasColumnName("received_at").HasDefaultValueSql("now()");

@@ -15,7 +15,12 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        container = new PostgreSqlBuilder("postgres:18").Build();
+        // The persistence suite creates one throwaway database per test, and each database keeps its
+        // own pooled connections for the length of the run, so the shared container needs headroom
+        // over the default max_connections of 100.
+        container = new PostgreSqlBuilder("postgres:18")
+            .WithCommand("-c", "max_connections=250")
+            .Build();
 
         await container.StartAsync();
 

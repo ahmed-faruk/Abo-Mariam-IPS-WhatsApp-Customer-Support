@@ -33,6 +33,12 @@ public sealed class OutboxMessage
 
     public DateTime? ClaimedAt { get; set; }
 
+    /// <summary>The owner of the current claim. Only that owner may record an outcome.</summary>
+    public Guid? ClaimToken { get; set; }
+
+    /// <summary>When the current claim stops being owned by <see cref="ClaimToken"/>.</summary>
+    public DateTime? ClaimExpiresAt { get; set; }
+
     public DateTime? SentAt { get; set; }
 
     public string? LastError { get; set; }
