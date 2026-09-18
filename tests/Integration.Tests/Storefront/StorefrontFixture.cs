@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
@@ -8,7 +9,9 @@ namespace WhatsAppMonitorAssistant.Integration.Tests.Storefront;
 /// <summary>
 /// Every Storefront test starts from a brand-new migrated PostgreSQL database, so no test can depend on
 /// another test's durable state. The helpers seed <c>storefront.business_info</c> directly, because demo
-/// business information is data provisioning rather than part of Issue #7.
+/// business information is data provisioning rather than part of Issue #7, and the direct reads left
+/// here exist only for schema defaults, hidden-row persistence and lock orchestration, which no public
+/// contract can observe.
 /// </summary>
 public abstract class StorefrontFixture(PostgresContainerFixture postgres) : IAsyncLifetime
 {
@@ -21,7 +24,8 @@ public abstract class StorefrontFixture(PostgresContainerFixture postgres) : IAs
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    internal StorefrontHost StartHost() => StorefrontHost.Start(ConnectionString);
+    internal StorefrontHost StartHost(string? applicationName = null) =>
+        StorefrontHost.Start(ConnectionString, applicationName);
 
     internal static IStorefrontBusinessInfo BusinessInfo(IServiceProvider services) =>
         services.GetRequiredService<IStorefrontBusinessInfo>();
@@ -52,21 +56,16 @@ public abstract class StorefrontFixture(PostgresContainerFixture postgres) : IAs
             + "WHERE table_schema = 'storefront' AND table_name = 'business_info' "
             + "ORDER BY ordinal_position");
 
-    internal async Task<string?> StoredAnswerArAsync(string key) =>
-        Text(await ScalarAsync(
-            "SELECT answer_ar FROM storefront.business_info WHERE \"key\" = @key",
-            ("key", key)));
-
-    internal async Task<string?> StoredAnswerEnAsync(string key) =>
-        Text(await ScalarAsync(
-            "SELECT answer_en FROM storefront.business_info WHERE \"key\" = @key",
-            ("key", key)));
-
+    /// <summary>
+    /// The stored active flag, kept as a direct read for the schema-default test and for the hidden-row
+    /// invariant that a customer-facing read cannot observe.
+    /// </summary>
     internal async Task<string?> StoredActiveStateAsync(string key) =>
         Text(await ScalarAsync(
             "SELECT is_active::text FROM storefront.business_info WHERE \"key\" = @key",
             ("key", key)));
 
+    /// <summary>The stored timestamp, for the schema-default test.</summary>
     internal async Task<string?> StoredUpdatedAtAsync(string key) =>
         Text(await ScalarAsync(
             "SELECT updated_at::text FROM storefront.business_info WHERE \"key\" = @key",
@@ -95,6 +94,47 @@ public abstract class StorefrontFixture(PostgresContainerFixture postgres) : IAs
         }
 
         return await command.ExecuteScalarAsync();
+    }
+
+    /// <summary>
+    /// The PostgreSQL wall clock at the moment of the query, unlike <c>now()</c>, which is pinned to
+    /// the start of its transaction. It is the comparison reference for a write that waited on a lock.
+    /// </summary>
+    internal async Task<DateTime> PostgresClockTimestampAsync() =>
+        (DateTime)(await ScalarAsync("SELECT clock_timestamp()"))!;
+
+    /// <summary>
+    /// Blocks until PostgreSQL reports a session of <paramref name="applicationName"/> waiting for a
+    /// lock, so a concurrency test can act on the observed wait instead of on a guessed delay.
+    /// </summary>
+    internal async Task WaitUntilSessionWaitsForALockAsync(
+        string applicationName,
+        TimeSpan timeout)
+    {
+        const string sql = """
+            SELECT count(*)::int
+            FROM pg_locks AS locks
+            JOIN pg_stat_activity AS activity ON activity.pid = locks.pid
+            WHERE NOT locks.granted
+              AND locks.locktype = 'transactionid'
+              AND activity.application_name = @application_name;
+            """;
+
+        var elapsed = Stopwatch.StartNew();
+
+        while (true)
+        {
+            if ((int)(await ScalarAsync(sql, ("application_name", applicationName)))! > 0)
+            {
+                return;
+            }
+
+            Assert.False(
+                elapsed.Elapsed > timeout,
+                $"No '{applicationName}' session waited for a lock within {timeout.TotalSeconds:0} seconds.");
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20));
+        }
     }
 
     /// <summary>Runs one statement that PostgreSQL is expected to reject.</summary>

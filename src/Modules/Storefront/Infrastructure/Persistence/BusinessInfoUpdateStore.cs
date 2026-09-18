@@ -28,14 +28,16 @@ internal sealed class BusinessInfoUpdateStore(StorefrontDbContext dbContext) : I
 
     /// <summary>
     /// Writes the change. <c>updated_at</c> is set by PostgreSQL itself, so the row's own clock stays
-    /// the authority for when the value last changed.
+    /// the authority for when the value last changed. It is <c>clock_timestamp()</c> rather than
+    /// <c>now()</c>, because <c>now()</c> is pinned to the transaction start: an update that waited on
+    /// the row lock would otherwise record the earlier begin time instead of the time it wrote.
     /// </summary>
     private const string UpdateSql = """
         UPDATE storefront.business_info
         SET answer_ar = @answer_ar,
             answer_en = @answer_en,
             is_active = @is_active,
-            updated_at = now()
+            updated_at = clock_timestamp()
         WHERE "key" = @key;
         """;
 

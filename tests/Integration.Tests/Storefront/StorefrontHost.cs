@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Storefront;
@@ -11,14 +12,24 @@ internal sealed class StorefrontHost(ServiceProvider provider) : IAsyncDisposabl
 {
     public IServiceProvider Services => provider;
 
-    public static StorefrontHost Start(string connectionString)
+    public static StorefrontHost Start(string connectionString, string? applicationName = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStorefrontModule(connectionString);
+        services.AddStorefrontModule(WithApplicationName(connectionString, applicationName));
 
         return new StorefrontHost(services.BuildServiceProvider());
     }
+
+    /// <summary>
+    /// Names the module's sessions when a test asks for it, so a concurrency test can recognize the
+    /// module's own connection while it waits on a row lock.
+    /// </summary>
+    private static string WithApplicationName(string connectionString, string? applicationName) =>
+        applicationName is null
+            ? connectionString
+            : new NpgsqlConnectionStringBuilder(connectionString) { ApplicationName = applicationName }
+                .ConnectionString;
 
     public AsyncServiceScope CreateScope() => provider.CreateAsyncScope();
 
