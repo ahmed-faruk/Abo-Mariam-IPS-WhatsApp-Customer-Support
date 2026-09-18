@@ -105,10 +105,20 @@ Warm-up requests are never part of the metrics. `run` treats its own process as 
 
 ## System prompt
 
-The prompt is short but explicit about the documented contract: the ten intent names spelled
-exactly as in docs/TECHNICAL.md section 9 (never `product_search`-style aliases), field ownership
-for every documented field, the curated use-case vocabulary, and the budget wording that means
-Hard (`مش عايز أعدي`, `بحد أقصى`, `أقصى حاجة`, `مايزدش عن`), Soft (`في حدود`, `حوالي`), Range or None.
+The prompt (`nlu-system-prompt-v3`) is compact but explicit about the documented contract:
+
+- extraction is stated-facts-only: every value the customer states must be extracted, and nothing
+  may be inferred, assumed or defaulted; a use case never implies a port, grade, panel, resolution,
+  refresh rate or budget;
+- absence uses the schema's own convention: absent optional scalar = `null`, absent ports and
+  grades = `[]`, and never an empty string or a `"unknown"`/`"N/A"`/`"default"` placeholder;
+- the ten intent names are spelled exactly as in docs/TECHNICAL.md section 9 (never a
+  `product_search`-style alias), with routing rules that keep a specification-bearing search as
+  `ProductSearch`, reserve `ProductDetails` for details about an already identified item, and place
+  availability, price, comparison, store-policy, handoff, greeting and out-of-scope messages;
+- field ownership for every documented field, the curated use-case vocabulary, the model-code rule
+  that price/size/resolution/refresh numbers are not model codes, and the budget wording that means
+  Hard (`مش عايز أعدي`, `بحد أقصى`, `أقصى حاجة`, `مايزدش عن`), Soft (`في حدود`, `حوالي`), Range or None.
 
 It contains no dataset case and no expected output, and the harness contains no rule that
 rewrites model output to make a case pass. Normalization exists only in the comparison layer

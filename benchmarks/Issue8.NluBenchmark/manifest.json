@@ -14,7 +14,7 @@
     "sha256": "fb9eacee28dcf31f6438fbe63092a8b48abb42cf5c592f4edd06874b2f1d4302"
   },
   "prompt": {
-    "version": "nlu-system-prompt-v2"
+    "version": "nlu-system-prompt-v3"
   },
   "defaultCandidate": {
     "model": "qwen3.5:2b-q4_K_M",
