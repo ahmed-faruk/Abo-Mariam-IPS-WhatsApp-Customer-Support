@@ -22,6 +22,10 @@ internal sealed class ProductModelConfiguration : IEntityTypeConfiguration<Produ
         builder.Property(model => model.Id).HasColumnName("id").UseIdentityAlwaysColumn();
 
         builder.Property(model => model.ModelCode).HasColumnName("model_code").IsRequired();
+
+        // The exact-duplicate guard. The logical uniqueness of a model code is the canonical comparison
+        // of the corrective Catalog migration, uq_product_model_canonical_code over
+        // catalog.canonical_text(model_code), because EF Core cannot map an index on an expression.
         builder.HasIndex(model => model.ModelCode).IsUnique();
 
         builder.Property(model => model.Brand).HasColumnName("brand").IsRequired();

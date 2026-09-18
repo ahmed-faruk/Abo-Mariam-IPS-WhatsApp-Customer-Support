@@ -27,6 +27,7 @@ internal sealed class ProductVariantConfiguration : IEntityTypeConfiguration<Pro
         builder.HasIndex(variant => variant.Sku).IsUnique();
 
         builder.Property(variant => variant.Grade).HasColumnName("grade").IsRequired();
+        // numeric(12,2) is the storage shape CatalogPriceBounds.MaxSellingPrice is derived from.
         builder.Property(variant => variant.SellingPrice).HasColumnName("selling_price").HasPrecision(12, 2);
         builder.Property(variant => variant.Quantity).HasColumnName("quantity").HasDefaultValue(0);
         builder.Property(variant => variant.WarrantyDays).HasColumnName("warranty_days").HasDefaultValue(0);
