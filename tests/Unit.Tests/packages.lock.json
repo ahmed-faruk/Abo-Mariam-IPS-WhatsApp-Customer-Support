@@ -209,6 +209,16 @@
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )"
         }
       },
+      "storefront": {
+        "type": "Project",
+        "dependencies": {
+          "BuildingBlocks.Application": "[1.0.0, )",
+          "BuildingBlocks.Domain": "[1.0.0, )",
+          "Microsoft.EntityFrameworkCore": "[10.0.8, )",
+          "Microsoft.EntityFrameworkCore.Relational": "[10.0.8, )",
+          "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )"
+        }
+      },
       "Microsoft.EntityFrameworkCore": {
         "type": "CentralTransitive",
         "requested": "[10.0.8, )",

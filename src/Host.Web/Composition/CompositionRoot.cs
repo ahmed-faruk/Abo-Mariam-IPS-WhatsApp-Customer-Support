@@ -4,7 +4,7 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
-using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Persistence;
+using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure;
 
 namespace WhatsAppMonitorAssistant.Host.Web.Composition;
 
@@ -44,7 +44,7 @@ public static class CompositionRoot
             configuration.GetSection(CatalogSearchOptions.ConfigurationSectionName).Bind(options));
         services.AddConversationPersistence(connectionString);
         services.AddMessagingModule(connectionString);
-        services.AddStorefrontPersistence(connectionString);
+        services.AddStorefrontModule(connectionString);
         services.AddIdentityPersistence(connectionString);
 
         return services;
