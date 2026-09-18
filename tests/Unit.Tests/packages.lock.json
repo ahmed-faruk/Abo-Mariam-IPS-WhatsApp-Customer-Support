@@ -209,6 +209,9 @@
           "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )"
         }
       },
+      "issue8.nlubenchmark": {
+        "type": "Project"
+      },
       "storefront": {
         "type": "Project",
         "dependencies": {

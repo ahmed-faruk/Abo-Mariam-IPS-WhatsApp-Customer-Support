@@ -1,0 +1,72 @@
+{
+  "benchmarkFormatVersion": "1",
+  "harnessVersion": "issue8-nlu-benchmark-1",
+  "sourceDocument": "docs/TECHNICAL.md v3.2 section 8/9/28, docs/PLAN.md v3.2 section 13.3",
+  "dataset": {
+    "path": "data/v1/cases.jsonl",
+    "version": "v1",
+    "caseCount": 60,
+    "sha256": "a00232ad824548eb806ac0a79141f2d9f12f0e70f4b0b962b283f838a6c3570b"
+  },
+  "schema": {
+    "path": "schemas/nlu-output.schema.json",
+    "version": "nlu-output-v1",
+    "sha256": "fb9eacee28dcf31f6438fbe63092a8b48abb42cf5c592f4edd06874b2f1d4302"
+  },
+  "prompt": {
+    "version": "nlu-system-prompt-v1"
+  },
+  "defaultCandidate": {
+    "model": "qwen3.5:2b-q4_K_M",
+    "baseUrl": "http://127.0.0.1:11434",
+    "timeoutSeconds": 20,
+    "temperature": 0,
+    "contextTokens": 4096,
+    "retryPolicy": "one-retry-maximum"
+  },
+  "acceptanceGates": {
+    "intentAccuracyPercent": 90,
+    "hardBudgetAccuracyPercent": 100,
+    "schemaSuccessPercent": 98,
+    "warmMedianSeconds": 8,
+    "warmP95Seconds": 12
+  },
+  "requiredCoverageTags": [
+    "egyptian-arabic",
+    "mixed-arabic-english",
+    "brand-alias",
+    "arabic-indic-digits",
+    "western-digits",
+    "model-code",
+    "size",
+    "panel",
+    "resolution",
+    "refresh-rate",
+    "ports",
+    "grades",
+    "budget-hard",
+    "budget-soft",
+    "budget-range",
+    "budget-none",
+    "use-case",
+    "follow-up-reference",
+    "prompt-injection",
+    "ambiguous-observational",
+    "intent-product-search",
+    "intent-product-details",
+    "intent-product-comparison",
+    "intent-availability-check",
+    "intent-price-check",
+    "intent-business-info",
+    "intent-greeting",
+    "intent-human-handoff",
+    "intent-out-of-scope",
+    "faq-working-hours",
+    "faq-address",
+    "faq-delivery",
+    "faq-payment",
+    "faq-warranty",
+    "faq-contact-phone",
+    "faq-return-exchange"
+  ]
+}

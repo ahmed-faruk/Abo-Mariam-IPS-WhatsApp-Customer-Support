@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Issue8.NluBenchmark</AssemblyName>
+    <RootNamespace>WhatsAppMonitorAssistant.Benchmarks.Nlu</RootNamespace>
+  </PropertyGroup>
+
+</Project>
