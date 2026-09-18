@@ -8,7 +8,9 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 
 /// <summary>
 /// The durable Outbox queue from docs/TECHNICAL.md section 15. Claiming, retrying and
-/// dead-lettering never touch the stored body or its hash.
+/// dead-lettering never touch the stored body or its hash. Claims are serialized per partition with
+/// a transaction-scoped PostgreSQL advisory lock, so two concurrent claim transactions can never
+/// take two messages of one partition.
 /// </summary>
 internal sealed class OutboxMessageStore(MessagingDbContext dbContext, MessagingQueueOptions options)
     : IOutboxMessageStore
@@ -35,10 +37,19 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
             FOR UPDATE SKIP LOCKED
             LIMIT @batch_size
         ),
-        selected AS (
-            SELECT DISTINCT ON (candidate.partition_key) candidate.id
+        locked AS MATERIALIZED (
+            -- Two claim transactions must never take two messages of one partition. A claim that is
+            -- still uncommitted is invisible to the NOT EXISTS above, and SKIP LOCKED only steps
+            -- over the row that holds it, so the partition itself is locked for the rest of this
+            -- transaction. A claimer that loses the lock steps over the whole partition.
+            SELECT candidate.id, candidate.partition_key
             FROM candidate
-            ORDER BY candidate.partition_key, candidate.id
+            WHERE pg_try_advisory_xact_lock(hashtextextended(candidate.partition_key, 0))
+        ),
+        selected AS (
+            SELECT DISTINCT ON (locked.partition_key) locked.id
+            FROM locked
+            ORDER BY locked.partition_key, locked.id
         )
         UPDATE messaging.outbox_message AS m
         SET delivery_status = 'Claimed',
@@ -46,6 +57,17 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
             attempts = m.attempts + 1
         FROM selected
         WHERE m.id = selected.id
+          AND NOT EXISTS (
+              -- The partition lock is taken after the candidate rows are read, so a concurrent
+              -- claimer can hold an earlier message of the partition without having committed it.
+              -- A later message is therefore never taken while an earlier one is still claimable,
+              -- so the documented oldest-id-first order of a partition is never broken.
+              SELECT 1
+              FROM messaging.outbox_message AS ahead
+              WHERE ahead.partition_key = m.partition_key
+                AND ahead.id < m.id
+                AND ahead.delivery_status = 'Pending'
+                AND ahead.run_after <= now())
         RETURNING m.id, m.conversation_id, m.customer_external_id, m.correlation_id, m.sender,
                   m.body, m.provider_message_id, m.attempts, m.max_attempts;
         """;
