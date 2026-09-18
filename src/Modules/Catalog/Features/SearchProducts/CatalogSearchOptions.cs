@@ -4,7 +4,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Features.SearchProducts;
 
 /// <summary>
 /// Catalogue search policy. The result bound follows docs/TECHNICAL.md section 10, which limits a
-/// search to twenty recommendations.
+/// search to twenty recommendations, so <see cref="MaxResults"/> defaults to and is validated against
+/// <see cref="CatalogSearchPolicy.MaximumResults"/>.
 /// </summary>
 /// <remarks>
 /// Both tolerances are mandatory configuration. docs/PLAN.md UC-02 allows a configurable tolerance for
@@ -35,7 +36,7 @@ public sealed class CatalogSearchOptions
     public decimal? SoftBudgetTolerance { get; set; }
 
     /// <summary>The largest result set any caller can obtain, so a search is always bounded.</summary>
-    public int MaxResults { get; set; } = 20;
+    public int MaxResults { get; set; } = CatalogSearchPolicy.MaximumResults;
 
     /// <summary>
     /// The validated size tolerance. Configuration validation rejects a missing value, so this is only

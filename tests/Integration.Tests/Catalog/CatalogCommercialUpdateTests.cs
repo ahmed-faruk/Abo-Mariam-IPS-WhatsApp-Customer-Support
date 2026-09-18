@@ -56,6 +56,50 @@ public sealed class CatalogCommercialUpdateTests(PostgresContainerFixture postgr
     }
 
     [Fact]
+    public async Task A_price_that_rounds_to_the_stored_price_is_a_no_op_and_writes_nothing()
+    {
+        var variant = await AddVariantAsync(await AddModelAsync("P2419H"), "SKU-P2419H", price: 3999.56m);
+
+        await using var host = StartHost();
+        await using var scope = host.CreateScope();
+
+        // PostgreSQL stores the column as numeric(12,2), so 3999.555 is the stored 3999.56: the raw
+        // request differs from the locked price, the stored value does not.
+        var outcome = await Commercials(scope.ServiceProvider).UpdatePriceAsync(
+            new VariantPriceUpdate(variant, 3999.555m, Actor));
+
+        Assert.Equal(CommercialUpdateOutcome.Unchanged, outcome);
+        Assert.Equal("3999.56", await StoredPriceAsync(variant));
+        Assert.Equal("0", await AuditCountAsync());
+        Assert.Equal("true", await Catalog.ScalarAsync(
+            $"SELECT (updated_at = created_at)::text FROM catalog.product_variant WHERE id = {variant}"));
+    }
+
+    [Fact]
+    public async Task A_price_that_rounds_to_a_different_stored_price_is_updated_and_audited()
+    {
+        var variant = await AddVariantAsync(await AddModelAsync("P2419H"), "SKU-P2419H", price: 3999.56m);
+
+        await using var host = StartHost();
+        await using var scope = host.CreateScope();
+
+        // 3999.565 is stored as 3999.57, so this is a real change and the audit records both stored
+        // representations.
+        var outcome = await Commercials(scope.ServiceProvider).UpdatePriceAsync(
+            new VariantPriceUpdate(variant, 3999.565m, Actor));
+
+        Assert.Equal(CommercialUpdateOutcome.Updated, outcome);
+        Assert.Equal("3999.57", await StoredPriceAsync(variant));
+
+        var audit = Assert.Single(await AuditsAsync());
+
+        Assert.Equal("UpdatePrice", audit.Action);
+        Assert.Equal("""{"selling_price": 3999.56}""", audit.OldJson);
+        Assert.Equal("""{"selling_price": 3999.57}""", audit.NewJson);
+        Assert.Equal(Actor, audit.UserId);
+    }
+
+    [Fact]
     public async Task A_quantity_change_and_its_audit_row_commit_together()
     {
         var variant = await AddVariantAsync(await AddModelAsync("P2419H"), "SKU-P2419H", quantity: 3);

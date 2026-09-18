@@ -5,7 +5,8 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Domain;
 /// <summary>
 /// Builds the normalized criteria of a search. Values that could not constrain a catalogue honestly
 /// (a size, a resolution or a refresh rate that is not above zero) are treated as absent instead of
-/// matching nothing, and the requested limit is always clamped to the configured maximum.
+/// matching nothing, and the requested limit is always clamped to the configured maximum and to the
+/// search policy of docs/TECHNICAL.md section 10.
 /// </summary>
 public static class CatalogSearchCriteriaFactory
 {
@@ -58,6 +59,14 @@ public static class CatalogSearchCriteriaFactory
 
     private static int? PositiveOrNull(int? value) => value is > 0 ? value : null;
 
-    private static int BoundedLimit(int? requested, int maxResults) =>
-        requested is null or <= 0 ? maxResults : Math.Min(requested.Value, maxResults);
+    /// <summary>
+    /// The configured maximum is validated against the policy bound, and it is clamped here as well so
+    /// a host that skipped its own configuration validation still cannot run a wider search.
+    /// </summary>
+    private static int BoundedLimit(int? requested, int maxResults)
+    {
+        var maximum = Math.Min(maxResults, CatalogSearchPolicy.MaximumResults);
+
+        return requested is null or <= 0 ? maximum : Math.Min(requested.Value, maximum);
+    }
 }

@@ -37,7 +37,9 @@ public static class CompositionRoot
 
         // The tolerated distances are explicit deployment configuration: the project baseline defines
         // a soft budget tolerance and a size tolerance but no values for them, so an unset one fails
-        // startup validation naming the setting instead of silently applying an invented default.
+        // startup validation naming the setting instead of silently applying an invented default. The
+        // required keys, their environment variable names and the local workflow are documented in
+        // docs/CONFIGURATION.md and named in the checked-in appsettings.json template.
         services.AddCatalogModule(connectionString, options =>
             configuration.GetSection(CatalogSearchOptions.ConfigurationSectionName).Bind(options));
         services.AddConversationPersistence(connectionString);

@@ -26,9 +26,21 @@ internal sealed class VariantCommercialUpdateStore(CatalogDbContext dbContext) :
         FOR UPDATE;
         """;
 
+    /// <summary>
+    /// Locks the variant row and asks PostgreSQL to normalize the requested price to the column's own
+    /// representation in the same statement, so the no-op check compares the value PostgreSQL would
+    /// actually store instead of the raw request.
+    /// </summary>
+    private const string LockVariantPriceSql = """
+        SELECT selling_price, (@requested_price::numeric(12,2)) AS requested_price
+        FROM catalog.product_variant
+        WHERE id = @variant_id
+        FOR UPDATE;
+        """;
+
     private const string UpdatePriceSql = """
         UPDATE catalog.product_variant
-        SET selling_price = @selling_price,
+        SET selling_price = @selling_price::numeric(12,2),
             updated_at = now()
         WHERE id = @variant_id
         RETURNING selling_price;
@@ -58,14 +70,17 @@ internal sealed class VariantCommercialUpdateStore(CatalogDbContext dbContext) :
         var connection = await CatalogSqlCommands.OpenAsync(dbContext, cancellationToken);
         var dbTransaction = transaction.GetDbTransaction();
 
-        var current = await LockVariantAsync(connection, dbTransaction, update.VariantId, cancellationToken);
+        var current = await LockVariantPriceAsync(connection, dbTransaction, update, cancellationToken);
 
         if (current is null)
         {
             return CommercialUpdateOutcome.VariantNotFound;
         }
 
-        if (current.Price == update.Price)
+        // Both sides of the comparison carry the column's numeric(12,2) representation, so a request
+        // that only differs beyond the stored scale is a no-op: no update, no moved updated_at and no
+        // audit row claiming a change that PostgreSQL would not store.
+        if (current.Price == current.NormalizedPrice)
         {
             return CommercialUpdateOutcome.Unchanged;
         }
@@ -77,7 +92,7 @@ internal sealed class VariantCommercialUpdateStore(CatalogDbContext dbContext) :
         await using (var command = CatalogSqlCommands.Create(connection, dbTransaction, UpdatePriceSql))
         {
             CatalogSqlCommands.Add(command, "variant_id", update.VariantId);
-            CatalogSqlCommands.Add(command, "selling_price", update.Price);
+            CatalogSqlCommands.Add(command, "selling_price", current.NormalizedPrice);
 
             storedPrice = (decimal)(await command.ExecuteScalarAsync(cancellationToken))!;
         }
@@ -217,6 +232,27 @@ internal sealed class VariantCommercialUpdateStore(CatalogDbContext dbContext) :
             : null;
     }
 
+    /// <summary>
+    /// The locked current price and the requested price as PostgreSQL normalizes it to
+    /// <c>numeric(12,2)</c>, which is the exact representation the update would store.
+    /// </summary>
+    private static async Task<VariantPriceState?> LockVariantPriceAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        VariantPriceUpdate update,
+        CancellationToken cancellationToken)
+    {
+        await using var command = CatalogSqlCommands.Create(connection, transaction, LockVariantPriceSql);
+        CatalogSqlCommands.Add(command, "variant_id", update.VariantId);
+        CatalogSqlCommands.Add(command, "requested_price", update.Price);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        return await reader.ReadAsync(cancellationToken)
+            ? new VariantPriceState(reader.GetDecimal(0), reader.GetDecimal(1))
+            : null;
+    }
+
     private static string PriceJson(decimal price) => JsonSerializer.Serialize(new { selling_price = price });
 
     private static string QuantityJson(int quantity) => JsonSerializer.Serialize(new { quantity });
@@ -225,4 +261,7 @@ internal sealed class VariantCommercialUpdateStore(CatalogDbContext dbContext) :
 
     /// <summary>The locked state of the variant, captured before the change is applied.</summary>
     private sealed record VariantState(decimal Price, int Quantity, bool IsActive);
+
+    /// <summary>The locked price of the variant, with the requested price normalized by PostgreSQL.</summary>
+    private sealed record VariantPriceState(decimal Price, decimal NormalizedPrice);
 }

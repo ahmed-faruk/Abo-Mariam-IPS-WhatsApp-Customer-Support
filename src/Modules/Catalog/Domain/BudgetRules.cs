@@ -15,7 +15,9 @@ public static class BudgetRules
 {
     /// <summary>
     /// Resolves the stated budget into inclusive price bounds. Only a soft budget widens the stated
-    /// target, and it widens it above the target while still ranking close to it.
+    /// target, and it widens it above the target while still ranking close to it. The widened bound
+    /// never exceeds <see cref="CatalogPriceBounds.MaxSellingPrice"/>, because no stored variant can be
+    /// priced above it, and it therefore never overflows for an oversized target or tolerance.
     /// </summary>
     public static BudgetScope Resolve(ProductBudget? budget, decimal softTolerance)
     {
@@ -37,10 +39,44 @@ public static class BudgetRules
             BudgetType.Hard => new BudgetScope(null, RequireAmount(budget.Target, nameof(ProductBudget.Target))),
             BudgetType.Soft => new BudgetScope(
                 null,
-                RequireAmount(budget.Target, nameof(ProductBudget.Target)) * (1 + softTolerance)),
+                SoftMaximum(RequireAmount(budget.Target, nameof(ProductBudget.Target)), softTolerance)),
             BudgetType.Range => ResolveRange(budget),
             _ => throw new ArgumentOutOfRangeException(nameof(budget), budget.Type, "The budget type is not supported."),
         };
+    }
+
+    /// <summary>
+    /// The documented soft semantics, <c>target * (1 + tolerance)</c>, saturated at the largest price
+    /// the selling-price column can store. The widening is computed as <c>target + target * tolerance</c>
+    /// so the factor <c>1 + tolerance</c> is never formed, and the tolerance that reaches the storage
+    /// bound is compared before the product is taken, so no oversized target or tolerance overflows.
+    /// </summary>
+    private static decimal SoftMaximum(decimal target, decimal tolerance)
+    {
+        if (target <= 0)
+        {
+            return target;
+        }
+
+        if (target > CatalogPriceBounds.MaxSellingPrice)
+        {
+            return CatalogPriceBounds.MaxSellingPrice;
+        }
+
+        // Below this ratio no representable tolerance can reach the storage bound, and even an extreme
+        // one keeps the widening representable, so the documented value is computed exactly.
+        if (target < CatalogPriceBounds.MaxSellingPrice / decimal.MaxValue)
+        {
+            return target + (target * tolerance);
+        }
+
+        // The target is within the storage bound, so the quotient is representable and the tolerance
+        // that saturates the bound is at least zero.
+        var saturatingTolerance = (CatalogPriceBounds.MaxSellingPrice / target) - 1m;
+
+        return tolerance >= saturatingTolerance
+            ? CatalogPriceBounds.MaxSellingPrice
+            : target + (target * tolerance);
     }
 
     private static BudgetScope ResolveRange(ProductBudget budget)

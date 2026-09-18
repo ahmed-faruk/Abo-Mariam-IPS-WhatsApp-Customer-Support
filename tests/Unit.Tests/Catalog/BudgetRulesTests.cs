@@ -86,6 +86,67 @@ public sealed class BudgetRulesTests
     }
 
     [Fact]
+    public void A_soft_budget_of_the_largest_decimal_saturates_at_the_storage_bound()
+    {
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(decimal.MaxValue), Tolerance);
+
+        Assert.Equal(CatalogPriceBounds.MaxSellingPrice, scope.Max);
+    }
+
+    [Fact]
+    public void A_soft_budget_just_below_the_largest_decimal_still_resolves_without_overflow()
+    {
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(decimal.MaxValue - 1m), Tolerance);
+
+        Assert.Equal(CatalogPriceBounds.MaxSellingPrice, scope.Max);
+    }
+
+    [Fact]
+    public void A_soft_budget_can_never_resolve_above_the_largest_storable_price()
+    {
+        // The widened bound would be larger than the column can store, so it saturates at the bound
+        // instead of overflowing or promising a price no stored variant could have.
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(CatalogPriceBounds.MaxSellingPrice - 1m), 0.9m);
+
+        Assert.Equal(CatalogPriceBounds.MaxSellingPrice, scope.Max);
+    }
+
+    [Fact]
+    public void A_soft_budget_below_the_storage_bound_keeps_the_documented_widening()
+    {
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(3_000_000_000m), 0.2m);
+
+        Assert.Equal(3_600_000_000m, scope.Max);
+    }
+
+    [Fact]
+    public void An_extreme_tolerance_saturates_instead_of_overflowing()
+    {
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(3000m), decimal.MaxValue);
+
+        Assert.Equal(CatalogPriceBounds.MaxSellingPrice, scope.Max);
+    }
+
+    [Fact]
+    public void A_tiny_target_with_an_extreme_tolerance_is_still_computed_without_overflow()
+    {
+        // The widening stays far below the storage bound for such a target, so nothing saturates and
+        // nothing overflows while the extreme tolerance is applied.
+        var scope = BudgetRules.Resolve(ProductBudget.Soft(0.0000000000000000001m), decimal.MaxValue);
+
+        Assert.True(scope.Max > 0m);
+        Assert.True(scope.Max < CatalogPriceBounds.MaxSellingPrice);
+    }
+
+    [Fact]
+    public void A_hard_ceiling_of_the_largest_decimal_is_still_exactly_the_stated_ceiling()
+    {
+        var scope = BudgetRules.Resolve(ProductBudget.Hard(decimal.MaxValue), Tolerance);
+
+        Assert.Equal(decimal.MaxValue, scope.Max);
+    }
+
+    [Fact]
     public void A_negative_budget_amount_is_rejected()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => BudgetRules.Resolve(ProductBudget.Hard(-1m), Tolerance));

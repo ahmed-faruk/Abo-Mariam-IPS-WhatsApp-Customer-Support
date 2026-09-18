@@ -14,7 +14,10 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
 /// The statement applies the hard filters first, then the admission rules of docs/PLAN.md section 7,
 /// then <c>DISTINCT ON (model_id)</c> so a model contributes exactly one recommendation (its best
 /// eligible variant under the same ordered keys), and finally the deterministic ranking of ADR-M07,
-/// which ends in stable persisted fields.
+/// which ends in stable persisted fields. Every text equality the criteria normalize (model code,
+/// brand, required ports) is compared through <c>catalog.canonical_text</c> on both sides, so the
+/// comparison and the unique model-code index share one canonical definition and stored values that
+/// only differ by case or whitespace runs still match.
 /// </remarks>
 internal sealed class ProductSearchReader(CatalogDbContext dbContext) : IProductSearchReader
 {
@@ -47,7 +50,8 @@ internal sealed class ProductSearchReader(CatalogDbContext dbContext) : IProduct
                      WHERE p.product_model_id = m.id),
                     '{}'::text[]) AS ports,
                 CASE
-                    WHEN @model_code::text IS NOT NULL AND lower(m.model_code) = @model_code::text THEN 0
+                    WHEN @model_code::text IS NOT NULL
+                     AND catalog.canonical_text(m.model_code) = catalog.canonical_text(@model_code::text) THEN 0
                     ELSE 1
                 END AS exact_rank,
                 CASE v.grade WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 ELSE 4 END AS grade_rank,
@@ -75,8 +79,10 @@ internal sealed class ProductSearchReader(CatalogDbContext dbContext) : IProduct
             WHERE m.is_active
               AND v.is_active
               AND v.quantity > 0
-              AND (@model_code::text IS NULL OR lower(m.model_code) = @model_code::text)
-              AND (@brand::text IS NULL OR lower(m.brand) = @brand::text)
+              AND (@model_code::text IS NULL
+                   OR catalog.canonical_text(m.model_code) = catalog.canonical_text(@model_code::text))
+              AND (@brand::text IS NULL
+                   OR catalog.canonical_text(m.brand) = catalog.canonical_text(@brand::text))
               AND (@size_inches::numeric IS NULL
                    OR abs(m.size_inches - @size_inches::numeric) <= @size_tolerance::numeric)
               AND (@panel_type::text IS NULL OR m.panel_type = @panel_type::text)
@@ -88,10 +94,12 @@ internal sealed class ProductSearchReader(CatalogDbContext dbContext) : IProduct
               AND (@budget_min::numeric IS NULL OR v.selling_price >= @budget_min::numeric)
               AND (@budget_max::numeric IS NULL OR v.selling_price <= @budget_max::numeric)
               AND (cardinality(@required_ports::text[]) = 0
-                   OR (SELECT count(DISTINCT lower(p.port_type))
+                   OR (SELECT count(DISTINCT catalog.canonical_text(p.port_type))
                        FROM catalog.product_model_port AS p
                        WHERE p.product_model_id = m.id
-                         AND lower(p.port_type) = ANY(@required_ports::text[]))
+                         AND catalog.canonical_text(p.port_type) = ANY (
+                             SELECT catalog.canonical_text(requested.port_type)
+                             FROM unnest(@required_ports::text[]) AS requested(port_type)))
                       = cardinality(@required_ports::text[]))
               AND (cardinality(@grades::text[]) = 0 OR v.grade = ANY(@grades::text[]))
         ),

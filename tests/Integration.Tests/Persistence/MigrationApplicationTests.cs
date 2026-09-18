@@ -1,3 +1,9 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.Extensions.DependencyInjection;
+using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
+
 namespace WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 
 /// <summary>
@@ -10,7 +16,7 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> ExpectedMigrations =
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
-            ["CatalogDbContext"] = ["InitialCatalog"],
+            ["CatalogDbContext"] = ["InitialCatalog", "CanonicalProductModelCode"],
             ["ConversationDbContext"] = ["InitialConversations"],
             ["MessagingDbContext"] = ["InitialMessaging", "AddClaimLeasesAndUtf8BodyHash"],
             ["StorefrontDbContext"] = ["InitialStorefront"],
@@ -69,7 +75,27 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
         var secondPass = await catalog.MigrationHistoryEntriesAsync("catalog");
 
         Assert.Equal(firstPass, secondPass);
-        Assert.Single(secondPass);
+        Assert.Equal(ExpectedMigrations["CatalogDbContext"].Count, secondPass.Count);
+    }
+
+    [Fact]
+    public async Task The_corrective_catalog_migration_applies_on_top_of_the_issue_4_baseline()
+    {
+        await using var provider = ModulePersistence.BuildHost(connectionString);
+        await using var scope = provider.CreateAsyncScope();
+
+        var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
+        var migrator = catalog.GetService<IMigrator>();
+
+        await migrator.MigrateAsync("InitialCatalog");
+
+        Assert.Equal(["InitialCatalog"], (await catalog.Database.GetAppliedMigrationsAsync()).Select(ToMigrationName));
+
+        await migrator.MigrateAsync();
+
+        Assert.Equal(
+            ExpectedMigrations["CatalogDbContext"],
+            (await catalog.Database.GetAppliedMigrationsAsync()).Select(ToMigrationName));
     }
 
     private static string ToMigrationName(string migrationId) =>

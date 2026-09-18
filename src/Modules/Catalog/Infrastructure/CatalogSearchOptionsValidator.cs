@@ -42,11 +42,12 @@ internal sealed class CatalogSearchOptionsValidator : IValidateOptions<CatalogSe
                 + $"{softBudgetTolerance}.");
         }
 
-        if (options.MaxResults < 1)
+        if (options.MaxResults < 1 || options.MaxResults > CatalogSearchPolicy.MaximumResults)
         {
             failures.Add(
-                $"The catalog search setting '{nameof(CatalogSearchOptions.MaxResults)}' must be greater than "
-                + $"zero but was {options.MaxResults}.");
+                $"The catalog search setting '{nameof(CatalogSearchOptions.MaxResults)}' must be between 1 and "
+                + $"{CatalogSearchPolicy.MaximumResults}, which is the search policy of "
+                + "docs/TECHNICAL.md section 10, but was {options.MaxResults}.");
         }
 
         return failures.Count == 0

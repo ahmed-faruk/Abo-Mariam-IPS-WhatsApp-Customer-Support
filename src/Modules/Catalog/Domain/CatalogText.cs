@@ -2,8 +2,10 @@ namespace WhatsAppMonitorAssistant.Modules.Catalog.Domain;
 
 /// <summary>
 /// The one deterministic normalization the catalogue uses for every text comparison. Stored values
-/// are never rewritten: a query is normalized the same way, and the comparison itself is
-/// case-insensitive, so a customer never has to match the stored spelling.
+/// are never rewritten, so PostgreSQL applies the same canonical form with
+/// <c>catalog.canonical_text(value)</c> to both sides of a comparison: trimming, collapsing whitespace
+/// runs and case folding. That function, created by the corrective Catalog migration, is also the
+/// expression of the unique model-code index, so a query can never be ambiguous.
 /// </summary>
 public static class CatalogText
 {

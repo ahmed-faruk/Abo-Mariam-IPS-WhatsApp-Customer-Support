@@ -204,6 +204,37 @@ public sealed class CatalogSearchCriteriaFactoryTests
         Assert.Equal(expected, criteria.Limit);
     }
 
+    [Theory]
+    [InlineData(21)]
+    [InlineData(100)]
+    [InlineData(int.MaxValue)]
+    public void A_configured_maximum_above_the_search_policy_bound_is_clamped_to_it(int configuredMaximum)
+    {
+        var requested = CatalogSearchCriteriaFactory.From(
+            new ProductSearchQuery { Limit = 1000 },
+            SizeTolerance,
+            SoftTolerance,
+            configuredMaximum);
+
+        var unrequested = CatalogSearchCriteriaFactory.From(
+            new ProductSearchQuery(),
+            SizeTolerance,
+            SoftTolerance,
+            configuredMaximum);
+
+        Assert.Equal(CatalogSearchPolicy.MaximumResults, requested.Limit);
+        Assert.Equal(CatalogSearchPolicy.MaximumResults, unrequested.Limit);
+    }
+
+    [Fact]
+    public void A_soft_budget_of_the_largest_decimal_saturates_at_the_storage_bound()
+    {
+        var criteria = Build(new ProductSearchQuery { Budget = ProductBudget.Soft(decimal.MaxValue) });
+
+        Assert.Equal(CatalogPriceBounds.MaxSellingPrice, criteria.BudgetMax);
+        Assert.Equal(decimal.MaxValue, criteria.BudgetTarget);
+    }
+
     [Fact]
     public void A_negative_size_tolerance_is_rejected()
     {

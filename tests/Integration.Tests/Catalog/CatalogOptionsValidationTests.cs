@@ -1,7 +1,10 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WhatsAppMonitorAssistant.Host.Web.Composition;
 using WhatsAppMonitorAssistant.Modules.Catalog.Domain;
 using WhatsAppMonitorAssistant.Modules.Catalog.Features.SearchProducts;
 using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure;
@@ -66,6 +69,9 @@ public sealed class CatalogOptionsValidationTests
             (nameof(CatalogSearchOptions.SoftBudgetTolerance), options => options.SoftBudgetTolerance = 12m),
             (nameof(CatalogSearchOptions.MaxResults), options => options.MaxResults = 0),
             (nameof(CatalogSearchOptions.MaxResults), options => options.MaxResults = -5),
+            (nameof(CatalogSearchOptions.MaxResults), options => options.MaxResults = 21),
+            (nameof(CatalogSearchOptions.MaxResults), options => options.MaxResults = 1000),
+            (nameof(CatalogSearchOptions.MaxResults), options => options.MaxResults = int.MaxValue),
         ];
 
         foreach (var (setting, configure) in invalid)
@@ -89,7 +95,18 @@ public sealed class CatalogOptionsValidationTests
 
         Assert.Equal(CatalogFixture.TestSizeToleranceInches, options.RequiredSizeToleranceInches);
         Assert.Equal(CatalogFixture.TestSoftBudgetTolerance, options.RequiredSoftBudgetTolerance);
-        Assert.True(options.MaxResults > 0);
+        Assert.Equal(CatalogSearchPolicy.MaximumResults, options.MaxResults);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(CatalogSearchPolicy.MaximumResults)]
+    public void A_maximum_within_the_search_policy_is_accepted(int maxResults)
+    {
+        using var provider = BuildProvider(options => options.MaxResults = maxResults);
+
+        Assert.Equal(maxResults, ResolveSearchOptions(provider).MaxResults);
     }
 
     [Fact]
@@ -151,6 +168,84 @@ public sealed class CatalogOptionsValidationTests
 
         Assert.Contains(nameof(CatalogSearchOptions.SizeToleranceInches), exception.Message, StringComparison.Ordinal);
         Assert.Contains(nameof(CatalogSearchOptions.SoftBudgetTolerance), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_documented_configuration_keys_start_the_host_with_the_supplied_policy()
+    {
+        // Fully qualified: WhatsAppMonitorAssistant.Host.Web is a namespace in scope here.
+        var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
+
+        builder.Logging.ClearProviders();
+
+        // Exactly the keys docs/CONFIGURATION.md and the checked-in appsettings.json template name.
+        builder.Configuration["ConnectionStrings:DefaultConnection"] = UnusedConnectionString;
+        builder.Configuration["Catalog:Search:SizeToleranceInches"] = "0.3";
+        builder.Configuration["Catalog:Search:SoftBudgetTolerance"] = "0.45";
+
+        builder.Services.AddApplicationComposition(builder.Configuration);
+
+        // The Messaging workers keep polling a queue; this test covers the composition root's
+        // configuration contract, so only the real startup validation runs.
+        builder.Services.RemoveAll<IHostedService>();
+
+        using var host = builder.Build();
+
+        await host.StartAsync();
+
+        var options = host.Services.GetRequiredService<IOptions<CatalogSearchOptions>>().Value;
+
+        Assert.Equal(0.3m, options.RequiredSizeToleranceInches);
+        Assert.Equal(0.45m, options.RequiredSoftBudgetTolerance);
+
+        await host.StopAsync();
+    }
+
+    [Fact]
+    public async Task A_composition_root_without_the_search_policy_fails_clearly_before_serving()
+    {
+        // Fully qualified: WhatsAppMonitorAssistant.Host.Web is a namespace in scope here.
+        var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
+
+        builder.Logging.ClearProviders();
+        builder.Configuration["ConnectionStrings:DefaultConnection"] = UnusedConnectionString;
+        builder.Services.AddApplicationComposition(builder.Configuration);
+        builder.Services.RemoveAll<IHostedService>();
+
+        using var host = builder.Build();
+
+        var exception = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+
+        Assert.Contains(nameof(CatalogSearchOptions.SizeToleranceInches), exception.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(CatalogSearchOptions.SoftBudgetTolerance), exception.Message, StringComparison.Ordinal);
+        Assert.Contains(CatalogSearchOptions.ConfigurationSectionName, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_documented_environment_variable_names_bind_the_required_settings()
+    {
+        // A private prefix keeps the process-wide environment untouched, and the double underscores are
+        // the documented mapping from the Catalog__Search__... variable names to the configuration keys.
+        const string prefix = "MONITOR_TEST_";
+        const string sizeVariable = prefix + "Catalog__Search__SizeToleranceInches";
+        const string softVariable = prefix + "Catalog__Search__SoftBudgetTolerance";
+
+        Environment.SetEnvironmentVariable(sizeVariable, "0.3");
+        Environment.SetEnvironmentVariable(softVariable, "0.45");
+
+        try
+        {
+            var configuration = new ConfigurationBuilder().AddEnvironmentVariables(prefix).Build();
+            var section = configuration.GetSection(CatalogSearchOptions.ConfigurationSectionName);
+
+            Assert.Equal("0.3", section[nameof(CatalogSearchOptions.SizeToleranceInches)]);
+            Assert.Equal("0.45", section[nameof(CatalogSearchOptions.SoftBudgetTolerance)]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(sizeVariable, null);
+            Environment.SetEnvironmentVariable(softVariable, null);
+        }
     }
 
     private static ServiceProvider BuildProvider(

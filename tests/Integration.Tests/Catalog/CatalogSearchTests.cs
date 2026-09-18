@@ -1,5 +1,6 @@
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Catalog.Contracts;
+using WhatsAppMonitorAssistant.Modules.Catalog.Domain;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Catalog;
 
@@ -437,6 +438,27 @@ public sealed class CatalogSearchTests(PostgresContainerFixture postgres) : Cata
         Assert.Equal(2, (await search.SearchAsync(new ProductSearchQuery())).Count);
         Assert.Equal(2, (await search.SearchAsync(new ProductSearchQuery { Limit = 50 })).Count);
         Assert.Single(await search.SearchAsync(new ProductSearchQuery { Limit = 1 }));
+    }
+
+    [Fact]
+    public async Task No_query_can_obtain_more_than_the_twenty_recommendations_of_the_search_policy()
+    {
+        for (var index = 1; index <= CatalogSearchPolicy.MaximumResults + 2; index++)
+        {
+            var model = await AddModelAsync($"POLICY-{index:D2}");
+            await AddVariantAsync(model, $"SKU-POLICY-{index:D2}");
+        }
+
+        await using var host = StartHost();
+        await using var scope = host.CreateScope();
+        var search = Search(scope.ServiceProvider);
+
+        Assert.Equal(
+            CatalogSearchPolicy.MaximumResults,
+            (await search.SearchAsync(new ProductSearchQuery { Limit = 1000 })).Count);
+        Assert.Equal(
+            CatalogSearchPolicy.MaximumResults,
+            (await search.SearchAsync(new ProductSearchQuery())).Count);
     }
 
     [Fact]
