@@ -43,8 +43,10 @@ public sealed class InboxWorker(
 
     /// <summary>
     /// Runs one bounded poll: claim a batch, process every claimed message, record every outcome.
+    /// The hosted service is the only production caller; the persistence suite drives a single poll
+    /// directly instead of racing its own polling loop.
     /// </summary>
-    public async Task<int> ProcessOnceAsync(CancellationToken cancellationToken = default)
+    internal async Task<int> ProcessOnceAsync(CancellationToken cancellationToken = default)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
 
@@ -107,23 +109,55 @@ public sealed class InboxWorker(
         try
         {
             await processor.ProcessAsync(message, cancellationToken);
-            await store.CompleteAsync(message.Id, cancellationToken);
+            await store.CompleteAsync(message.Id, message.ClaimToken, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Shutdown is not a business failure: the claim stays held rather than being reported.
+            // Shutdown is not a business failure: the claim stays held until its lease expires.
             throw;
+        }
+        catch (ClaimOwnershipLostException exception)
+        {
+            // The lease expired and another worker owns this message now. This worker must not
+            // overwrite that owner's bookkeeping, and there is nothing left for it to record.
+            logger.LogWarning(
+                exception,
+                "Inbox message {InboxMessageId} is no longer claimed by this worker, so no outcome was recorded.",
+                message.Id);
         }
         catch (Exception exception)
         {
-            var outcome = await store.FailAsync(message.Id, exception.Message, cancellationToken);
+            await RecordFailureAsync(store, message, exception, cancellationToken);
+        }
+    }
 
+    private async Task RecordFailureAsync(
+        IInboxMessageStore store,
+        ClaimedInboxMessage message,
+        Exception failure,
+        CancellationToken cancellationToken)
+    {
+        QueueFailureOutcome outcome;
+
+        try
+        {
+            outcome = await store.FailAsync(message.Id, message.ClaimToken, failure.Message, cancellationToken);
+        }
+        catch (ClaimOwnershipLostException exception)
+        {
             logger.LogWarning(
                 exception,
-                "Inbox message {InboxMessageId} failed on attempt {Attempts}: {Outcome}.",
-                message.Id,
-                message.Attempts,
-                outcome);
+                "Inbox message {InboxMessageId} is no longer claimed by this worker, so its failure was not recorded.",
+                message.Id);
+
+            return;
         }
+
+        logger.LogWarning(
+            failure,
+            "Inbox message {InboxMessageId} failed on attempt {Attempts}: {Outcome}.",
+            message.Id,
+            message.Attempts,
+            outcome);
     }
 }

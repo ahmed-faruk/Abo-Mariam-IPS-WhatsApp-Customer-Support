@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Workers;
@@ -26,18 +27,17 @@ public static class MessagingModuleRegistration
 
     private static void AddMessagingQueues(this IServiceCollection services, Action<MessagingQueueOptions>? configure)
     {
-        var options = new MessagingQueueOptions();
-        configure?.Invoke(options);
+        var queueOptions = services.AddOptions<MessagingQueueOptions>()
+            .Configure(options => configure?.Invoke(options));
 
-        if (options.IdlePollDelay <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                options.IdlePollDelay,
-                "The idle poll delay must be positive so a worker with no work never busy-spins.");
-        }
+        queueOptions.Services.AddSingleton<IValidateOptions<MessagingQueueOptions>, MessagingQueueOptionsValidator>();
 
-        services.AddSingleton(options);
+        // An invalid policy is rejected at startup, so no worker can ever poll in a failure loop.
+        queueOptions.ValidateOnStart();
+
+        // The workers and the stores read one validated instance of the queue policy.
+        services.AddSingleton(provider => provider.GetRequiredService<IOptions<MessagingQueueOptions>>().Value);
+
         services.AddScoped<IInboundMessageQueue, InboundMessageQueue>();
         services.AddScoped<IInboxMessageStore, InboxMessageStore>();
         services.AddScoped<IOutboundMessageQueue, OutboundMessageQueue>();

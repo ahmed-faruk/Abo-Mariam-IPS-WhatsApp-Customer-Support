@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 
 namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 
@@ -53,4 +54,28 @@ internal static class MessagingQueueCommands
         DateTimeKind.Local => value.ToUniversalTime(),
         _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
     };
+
+    /// <summary>
+    /// Explains a completion or a failure that matched no row. A message that is still stored but
+    /// not owned by the presented claim token belongs to somebody else now, because its lease
+    /// expired and the partition moved on; only a message that is really gone is a missing row.
+    /// </summary>
+    public static async Task<Exception> LostClaimAsync(
+        DbConnection connection,
+        string statusSql,
+        string messageName,
+        long messageId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = Create(connection, null, statusSql);
+        Add(command, "message_id", messageId);
+
+        var status = await command.ExecuteScalarAsync(cancellationToken) as string;
+
+        return status is null
+            ? new InvalidOperationException($"The {messageName} {messageId} does not exist.")
+            : new ClaimOwnershipLostException(
+                $"The {messageName} {messageId} is {status} and the presented claim token does not own "
+                + "it, so its outcome was not recorded.");
+    }
 }

@@ -67,7 +67,7 @@ public sealed class ConstraintAndIndexTests(PostgresContainerFixture postgres) :
 
         Assert.Contains(definitions, definition => definition.Contains("ck_outbox_body_hash", StringComparison.Ordinal)
             && definition.Contains("body_hash = sha256", StringComparison.Ordinal)
-            && definition.Contains("::bytea", StringComparison.Ordinal));
+            && definition.Contains("convert_to(body", StringComparison.Ordinal));
         Assert.Contains(definitions, definition => definition.Contains("ck_model_panel", StringComparison.Ordinal)
             && definition.Contains("'IPS'", StringComparison.Ordinal));
         Assert.Contains(definitions, definition => definition.Contains("ck_conversation_mode", StringComparison.Ordinal)

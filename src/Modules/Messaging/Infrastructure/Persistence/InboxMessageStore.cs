@@ -8,9 +8,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 
 /// <summary>
 /// The durable Inbox queue from docs/TECHNICAL.md section 15: exclusive claiming with
-/// <c>FOR UPDATE SKIP LOCKED</c>, one message per partition, oldest id first. Claims are serialized
-/// per partition with a transaction-scoped PostgreSQL advisory lock, so two concurrent claim
-/// transactions can never take two messages of one partition.
+/// <c>FOR UPDATE SKIP LOCKED</c>, one message per partition, oldest message first. Claims are leased
+/// and serialized per partition with a transaction-scoped PostgreSQL advisory lock, so two
+/// concurrent claim transactions can never take two messages of one partition, and a claim whose
+/// owner disappeared becomes claimable again once its lease expires.
 /// </summary>
 internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQueueOptions options)
     : IInboxMessageStore
@@ -25,17 +26,55 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         WHERE processing_status = 'Failed' AND run_after <= now();
         """;
 
-    private const string ClaimSql = """
-        WITH candidate AS MATERIALIZED (
-            SELECT i.id, i.partition_key
+    /// <summary>
+    /// Work abandoned by a worker that crashed, was cancelled or lost its database connection. The
+    /// lease is PostgreSQL-owned: only the clock releases it, and the recovery is bounded exactly
+    /// like a claim, so one poll never rewrites an unbounded number of rows.
+    /// </summary>
+    private const string RecoverExpiredClaimsSql = """
+        UPDATE messaging.inbox_message AS i
+        SET processing_status = 'Pending',
+            claim_token = NULL,
+            claim_expires_at = NULL
+        WHERE i.id IN (
+            SELECT expired.id
+            FROM messaging.inbox_message AS expired
+            WHERE expired.processing_status = 'Claimed'
+              AND expired.claim_expires_at <= now()
+            ORDER BY expired.id
+            FOR UPDATE SKIP LOCKED
+            LIMIT @batch_size)
+        RETURNING i.id;
+        """;
+
+    /// <summary>
+    /// The claim statement itself. It is module-internal rather than private so the persistence
+    /// suite can hold the real claim of this store open in a transaction while a second claimer runs.
+    /// </summary>
+    internal const string ClaimSql = """
+        WITH eligible AS MATERIALIZED (
+            -- At most one claimable message per partition, collapsed before the batch limit is
+            -- applied, so a hot partition can never spend the batch budget on rows that the
+            -- per-partition rule would discard afterwards.
+            SELECT DISTINCT ON (i.partition_key) i.id, i.partition_key
             FROM messaging.inbox_message AS i
             WHERE i.processing_status = 'Pending'
               AND i.run_after <= now()
+            ORDER BY i.partition_key, i.id
+        ),
+        candidate AS MATERIALIZED (
+            SELECT i.id, i.partition_key
+            FROM messaging.inbox_message AS i
+            WHERE i.id IN (SELECT eligible.id FROM eligible)
               AND NOT EXISTS (
+                  -- A later message of a partition never overtakes an earlier nonterminal one:
+                  -- Pending, Claimed and Failed all own the order, even while an earlier retry is
+                  -- still scheduled in the future.
                   SELECT 1
-                  FROM messaging.inbox_message AS claimed
-                  WHERE claimed.partition_key = i.partition_key
-                    AND claimed.processing_status = 'Claimed')
+                  FROM messaging.inbox_message AS ahead
+                  WHERE ahead.partition_key = i.partition_key
+                    AND ahead.id < i.id
+                    AND ahead.processing_status IN ('Pending','Claimed','Failed'))
             ORDER BY i.id
             FOR UPDATE SKIP LOCKED
             LIMIT @batch_size
@@ -57,20 +96,22 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         UPDATE messaging.inbox_message AS i
         SET processing_status = 'Claimed',
             claimed_at = now(),
+            claim_token = @claim_token,
+            claim_expires_at = now() + @claim_lease,
             attempts = i.attempts + 1
         FROM selected
         WHERE i.id = selected.id
+          AND i.processing_status = 'Pending'
+          AND i.run_after <= now()
           AND NOT EXISTS (
               -- The partition lock is taken after the candidate rows are read, so a concurrent
               -- claimer can hold an earlier message of the partition without having committed it.
-              -- A later message is therefore never taken while an earlier one is still claimable,
-              -- so the documented oldest-id-first order of a partition is never broken.
+              -- The guard keeps the documented oldest-first order of a partition intact even then.
               SELECT 1
               FROM messaging.inbox_message AS ahead
               WHERE ahead.partition_key = i.partition_key
                 AND ahead.id < i.id
-                AND ahead.processing_status = 'Pending'
-                AND ahead.run_after <= now())
+                AND ahead.processing_status IN ('Pending','Claimed','Failed'))
         RETURNING i.id, i.provider_message_id, i.customer_external_id, i.conversation_id,
                   i.message_type, i.body, i.provider_timestamp, i.attempts;
         """;
@@ -78,8 +119,12 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
     private const string CompleteSql = """
         UPDATE messaging.inbox_message
         SET processing_status = 'Processed',
-            processed_at = now()
+            processed_at = now(),
+            claim_token = NULL,
+            claim_expires_at = NULL
         WHERE id = @inbox_message_id
+          AND processing_status = 'Claimed'
+          AND claim_token = @claim_token
         RETURNING id;
         """;
 
@@ -87,9 +132,17 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         UPDATE messaging.inbox_message
         SET processing_status = CASE WHEN attempts >= @max_attempts THEN 'DeadLettered' ELSE 'Failed' END,
             last_error = @last_error,
-            run_after = CASE WHEN attempts >= @max_attempts THEN run_after ELSE now() + @retry_delay END
+            run_after = CASE WHEN attempts >= @max_attempts THEN run_after ELSE now() + @retry_delay END,
+            claim_token = NULL,
+            claim_expires_at = NULL
         WHERE id = @inbox_message_id
+          AND processing_status = 'Claimed'
+          AND claim_token = @claim_token
         RETURNING processing_status;
+        """;
+
+    private const string StatusSql = """
+        SELECT processing_status FROM messaging.inbox_message WHERE id = @message_id;
         """;
 
     public async Task<IReadOnlyList<ClaimedInboxMessage>> ClaimAsync(
@@ -101,17 +154,24 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
             throw new ArgumentOutOfRangeException(nameof(batchSize), batchSize, "The batch size must be positive.");
         }
 
+        // One claim is one lease: every message of this batch belongs to this token, and an owner
+        // that lost its lease can never record an outcome for a newer claim of the same message.
+        var claimToken = Guid.NewGuid();
+
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var connection = await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken);
         var dbTransaction = transaction.GetDbTransaction();
 
         await ExecuteAsync(connection, dbTransaction, RequeueDueRetriesSql, cancellationToken);
+        await RecoverExpiredClaimsAsync(connection, dbTransaction, batchSize, cancellationToken);
 
         var claimed = new List<ClaimedInboxMessage>();
 
         await using (var command = MessagingQueueCommands.Create(connection, dbTransaction, ClaimSql))
         {
             MessagingQueueCommands.Add(command, "batch_size", batchSize);
+            MessagingQueueCommands.Add(command, "claim_token", claimToken);
+            MessagingQueueCommands.Add(command, "claim_lease", options.ClaimLeaseDuration);
 
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -125,7 +185,8 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
                     MessageType: reader.GetString(4),
                     Body: reader.IsDBNull(5) ? null : reader.GetString(5),
                     ProviderTimestamp: reader.GetDateTime(6),
-                    Attempts: reader.GetInt32(7)));
+                    Attempts: reader.GetInt32(7),
+                    ClaimToken: claimToken));
             }
         }
 
@@ -135,20 +196,30 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         return [.. claimed.OrderBy(message => message.Id)];
     }
 
-    public async Task CompleteAsync(long inboxMessageId, CancellationToken cancellationToken = default)
+    public async Task CompleteAsync(
+        long inboxMessageId,
+        Guid claimToken,
+        CancellationToken cancellationToken = default)
     {
         await using var command = MessagingQueueCommands.Create(
             await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, CompleteSql);
         MessagingQueueCommands.Add(command, "inbox_message_id", inboxMessageId);
+        MessagingQueueCommands.Add(command, "claim_token", claimToken);
 
         if (await command.ExecuteScalarAsync(cancellationToken) is null or DBNull)
         {
-            throw new InvalidOperationException($"Inbox message {inboxMessageId} does not exist.");
+            throw await MessagingQueueCommands.LostClaimAsync(
+                command.Connection!,
+                StatusSql,
+                "Inbox message",
+                inboxMessageId,
+                cancellationToken);
         }
     }
 
     public async Task<QueueFailureOutcome> FailAsync(
         long inboxMessageId,
+        Guid claimToken,
         string error,
         CancellationToken cancellationToken = default)
     {
@@ -157,16 +228,34 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         await using var command = MessagingQueueCommands.Create(
             await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, FailSql);
         MessagingQueueCommands.Add(command, "inbox_message_id", inboxMessageId);
+        MessagingQueueCommands.Add(command, "claim_token", claimToken);
         MessagingQueueCommands.Add(command, "last_error", error);
         MessagingQueueCommands.Add(command, "max_attempts", options.InboxMaxAttempts);
         MessagingQueueCommands.Add(command, "retry_delay", options.InboxRetryDelay);
 
         var status = await command.ExecuteScalarAsync(cancellationToken) as string
-            ?? throw new InvalidOperationException($"Inbox message {inboxMessageId} does not exist.");
+            ?? throw await MessagingQueueCommands.LostClaimAsync(
+                command.Connection!,
+                StatusSql,
+                "Inbox message",
+                inboxMessageId,
+                cancellationToken);
 
         return string.Equals(status, InboxProcessingStatuses.DeadLettered, StringComparison.Ordinal)
             ? QueueFailureOutcome.DeadLettered
             : QueueFailureOutcome.RetryScheduled;
+    }
+
+    private static async Task RecoverExpiredClaimsAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        int batchSize,
+        CancellationToken cancellationToken)
+    {
+        await using var command = MessagingQueueCommands.Create(connection, transaction, RecoverExpiredClaimsSql);
+        MessagingQueueCommands.Add(command, "batch_size", batchSize);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ExecuteAsync(

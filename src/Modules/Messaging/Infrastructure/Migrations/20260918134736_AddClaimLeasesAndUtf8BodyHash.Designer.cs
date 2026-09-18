@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
 {
     [DbContext(typeof(MessagingDbContext))]
-    partial class MessagingDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260918134736_AddClaimLeasesAndUtf8BodyHash")]
+    partial class AddClaimLeasesAndUtf8BodyHash
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

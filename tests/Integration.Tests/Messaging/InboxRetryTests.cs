@@ -27,8 +27,13 @@ public sealed class InboxRetryTests(PostgresContainerFixture postgres) : Messagi
         await using var scope = host.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IInboxMessageStore>();
 
-        Assert.Equal(1, Assert.Single(await store.ClaimAsync(10)).Attempts);
-        Assert.Equal(QueueFailureOutcome.RetryScheduled, await store.FailAsync(id, "the processor crashed"));
+        var claimed = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(id, claimed.Id);
+        Assert.Equal(1, claimed.Attempts);
+        Assert.Equal(
+            QueueFailureOutcome.RetryScheduled,
+            await store.FailAsync(claimed.Id, claimed.ClaimToken, "the processor crashed"));
 
         Assert.Equal("Failed", await InboxStatusAsync(id));
         Assert.Equal("1", await Catalog.ScalarAsync($"SELECT attempts FROM messaging.inbox_message WHERE id = {id}"));
@@ -66,13 +71,21 @@ public sealed class InboxRetryTests(PostgresContainerFixture postgres) : Messagi
         await using var scope = host.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IInboxMessageStore>();
 
-        Assert.Equal(1, Assert.Single(await store.ClaimAsync(10)).Attempts);
-        Assert.Equal(QueueFailureOutcome.RetryScheduled, await store.FailAsync(id, "first failure"));
+        var claimed = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(1, claimed.Attempts);
+        Assert.Equal(
+            QueueFailureOutcome.RetryScheduled,
+            await store.FailAsync(claimed.Id, claimed.ClaimToken, "first failure"));
 
         await MakeInboxDueAsync(id);
 
-        Assert.Equal(2, Assert.Single(await store.ClaimAsync(10)).Attempts);
-        Assert.Equal(QueueFailureOutcome.DeadLettered, await store.FailAsync(id, "second failure"));
+        var retried = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(2, retried.Attempts);
+        Assert.Equal(
+            QueueFailureOutcome.DeadLettered,
+            await store.FailAsync(retried.Id, retried.ClaimToken, "second failure"));
 
         Assert.Equal("DeadLettered", await InboxStatusAsync(id));
         Assert.Equal("2", await Catalog.ScalarAsync($"SELECT attempts FROM messaging.inbox_message WHERE id = {id}"));
@@ -94,8 +107,10 @@ public sealed class InboxRetryTests(PostgresContainerFixture postgres) : Messagi
         await using var scope = host.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IInboxMessageStore>();
 
-        Assert.Equal(id, Assert.Single(await store.ClaimAsync(10)).Id);
-        await store.CompleteAsync(id);
+        var claimed = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(id, claimed.Id);
+        await store.CompleteAsync(claimed.Id, claimed.ClaimToken);
 
         Assert.Equal("Processed", await InboxStatusAsync(id));
         Assert.Equal("1", await Catalog.ScalarAsync(

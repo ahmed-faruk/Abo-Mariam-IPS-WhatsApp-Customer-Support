@@ -91,9 +91,12 @@ public sealed class SchemaOwnershipTests(PostgresContainerFixture postgres) : IA
         {
             var entries = await catalog.MigrationHistoryEntriesAsync(schema);
 
+            // A module owns its own history table: the documented baseline migration is applied
+            // first, and any corrective migration of the same module follows it in that table.
             Assert.True(
-                entries.Count == 1,
-                $"Expected one migration history row in schema '{schema}' but found {entries.Count}.");
+                entries.Count >= 1,
+                $"Expected at least one migration history row in schema '{schema}' but found {entries.Count}.");
+            Assert.StartsWith("2026", entries[0], StringComparison.Ordinal);
         }
     }
 

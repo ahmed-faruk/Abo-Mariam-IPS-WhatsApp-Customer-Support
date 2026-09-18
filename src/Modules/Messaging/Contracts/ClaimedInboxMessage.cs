@@ -9,6 +9,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// <param name="Body">The message text when the provider supplied one.</param>
 /// <param name="ProviderTimestamp">The provider timestamp, in UTC.</param>
 /// <param name="Attempts">Attempts including this claim.</param>
+/// <param name="ClaimToken">
+/// The lease owner of this claim. Completion and failure must present it, so an owner whose lease
+/// expired can never record an outcome for the claim somebody else holds now.
+/// </param>
 public sealed record ClaimedInboxMessage(
     long Id,
     string ProviderMessageId,
@@ -17,4 +21,5 @@ public sealed record ClaimedInboxMessage(
     string MessageType,
     string? Body,
     DateTime ProviderTimestamp,
-    int Attempts);
+    int Attempts,
+    Guid ClaimToken);

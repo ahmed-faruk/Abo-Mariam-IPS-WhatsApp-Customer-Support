@@ -21,6 +21,13 @@ public sealed class MessagingQueueOptions
     /// <summary>Delay before a failed Outbox message becomes claimable again.</summary>
     public TimeSpan OutboxRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// How long a claim owns its message. A worker that crashes, is cancelled or loses the database
+    /// keeps the partition only until this lease expires; after that the message is recovered and can
+    /// be claimed again. The lease is enforced by PostgreSQL, so it holds for every replica.
+    /// </summary>
+    public TimeSpan ClaimLeaseDuration { get; set; } = TimeSpan.FromMinutes(5);
+
     /// <summary>Idle wait between polls, so a worker with no work never busy-spins.</summary>
     public TimeSpan IdlePollDelay { get; set; } = TimeSpan.FromSeconds(1);
 }

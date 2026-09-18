@@ -21,4 +21,10 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The persistence suite drives one deterministic worker poll and reads the claim statements
+         the stores run, so it needs the module-internal queue surface rather than a public seam. -->
+    <InternalsVisibleTo Include="Integration.Tests" />
+  </ItemGroup>
+
 </Project>

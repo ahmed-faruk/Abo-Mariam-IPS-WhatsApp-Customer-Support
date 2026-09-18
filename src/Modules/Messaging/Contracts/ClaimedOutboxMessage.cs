@@ -10,6 +10,15 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// <param name="ProviderMessageId">Set only when the message was already sent once.</param>
 /// <param name="Attempts">Attempts including this claim.</param>
 /// <param name="MaxAttempts">The stored attempt limit for this message.</param>
+/// <param name="DeliveryKey">
+/// The stable identity of this logical delivery, for example <c>outbox:42</c>. It is derived from
+/// the Outbox identity, so every retry and every later reclaim of the same message presents the same
+/// key to <see cref="IOutboundMessageSender"/>.
+/// </param>
+/// <param name="ClaimToken">
+/// The lease owner of this claim. Completion and failure must present it, so an owner whose lease
+/// expired can never record an outcome for the claim somebody else holds now.
+/// </param>
 public sealed record ClaimedOutboxMessage(
     long Id,
     long ConversationId,
@@ -19,4 +28,6 @@ public sealed record ClaimedOutboxMessage(
     string Body,
     string? ProviderMessageId,
     int Attempts,
-    int MaxAttempts);
+    int MaxAttempts,
+    string DeliveryKey,
+    Guid ClaimToken);

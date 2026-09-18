@@ -118,11 +118,13 @@ public sealed class InboxClaimingTests(PostgresContainerFixture postgres) : Mess
         Assert.Equal("Pending", await InboxStatusAsync(secondId));
         Assert.Equal("Pending", await InboxStatusAsync(thirdId));
 
-        await store.CompleteAsync(firstId);
+        await store.CompleteAsync(claimed.Id, claimed.ClaimToken);
 
-        Assert.Equal(secondId, Assert.Single(await store.ClaimAsync(10)).Id);
+        var second = Assert.Single(await store.ClaimAsync(10));
 
-        await store.CompleteAsync(secondId);
+        Assert.Equal(secondId, second.Id);
+
+        await store.CompleteAsync(second.Id, second.ClaimToken);
 
         Assert.Equal(thirdId, Assert.Single(await store.ClaimAsync(10)).Id);
     }

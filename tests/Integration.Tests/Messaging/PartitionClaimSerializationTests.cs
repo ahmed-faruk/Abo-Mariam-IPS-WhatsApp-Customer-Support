@@ -1,10 +1,5 @@
-using System.Globalization;
-using System.Reflection;
-using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
-using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
-using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Messaging;
 
@@ -25,6 +20,8 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
     /// </summary>
     private const string PartitionLockSql = "SELECT pg_advisory_xact_lock(hashtextextended(@partition_key, 0))";
 
+    private static readonly TimeSpan Lease = TimeSpan.FromMinutes(5);
+
     public static TheoryData<QueueKind> Queues => new() { QueueKind.Inbox, QueueKind.Outbox };
 
     /// <summary>
@@ -35,7 +32,7 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
     [MemberData(nameof(Queues))]
     public async Task An_in_flight_claim_keeps_the_rest_of_its_partition_unclaimed(QueueKind queue)
     {
-        await using var host = MessagingHost.Start(ConnectionString);
+        await using var host = StartHost();
 
         long firstId;
         long secondId;
@@ -56,13 +53,17 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
 
         // The first claim is in flight. It runs the claim statement of the store itself, takes the
         // oldest message of the partition and keeps the partition until this transaction ends.
-        Assert.Equal(new[] { firstId }, await ClaimInFlightAsync(inFlightConnection, inFlight, queue, batchSize: 1));
+        Assert.Equal(
+            new[] { firstId },
+            await ClaimInFlightAsync(inFlightConnection, inFlight, queue, batchSize: 1));
 
         await using (var scope = host.CreateScope())
         {
             // The second claimer cannot see the uncommitted claim, and the partition is locked for
             // the rest of the first claim, so only the untouched partition can move.
-            Assert.Equal(new[] { otherPartitionId }, await ClaimAsync(queue, scope.ServiceProvider, 10));
+            Assert.Equal(
+                new[] { otherPartitionId },
+                (await ClaimAsync(queue, scope.ServiceProvider, 10)).Select(claim => claim.Id));
             Assert.Equal("Pending", await StatusAsync(queue, secondId));
             Assert.Equal("0", await AttemptsAsync(queue, secondId));
         }
@@ -73,11 +74,13 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
         await using (var scope = host.CreateScope())
         {
             // The in-flight claim never committed, so the partition is still claimed oldest first.
-            Assert.Equal(firstId, Assert.Single(await ClaimAsync(queue, scope.ServiceProvider, 10)));
+            var claimed = await ClaimAsync(queue, scope.ServiceProvider, 10);
 
-            await CompleteAsync(queue, scope.ServiceProvider, firstId);
+            Assert.Equal(firstId, Assert.Single(claimed).Id);
 
-            Assert.Equal(secondId, Assert.Single(await ClaimAsync(queue, scope.ServiceProvider, 10)));
+            await CompleteAsync(queue, scope.ServiceProvider, claimed[0]);
+
+            Assert.Equal(secondId, Assert.Single(await ClaimAsync(queue, scope.ServiceProvider, 10)).Id);
         }
     }
 
@@ -89,7 +92,7 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
     [MemberData(nameof(Queues))]
     public async Task A_partition_held_by_another_transaction_is_left_alone(QueueKind queue)
     {
-        await using var host = MessagingHost.Start(ConnectionString);
+        await using var host = StartHost();
 
         long heldId;
         long otherPartitionId;
@@ -110,7 +113,9 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
 
         await using (var scope = host.CreateScope())
         {
-            Assert.Equal(new[] { otherPartitionId }, await ClaimAsync(queue, scope.ServiceProvider, 10));
+            Assert.Equal(
+                new[] { otherPartitionId },
+                (await ClaimAsync(queue, scope.ServiceProvider, 10)).Select(claim => claim.Id));
             Assert.Equal("Pending", await StatusAsync(queue, heldId));
             Assert.Equal("0", await AttemptsAsync(queue, heldId));
         }
@@ -121,7 +126,7 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
 
         await using (var scope = host.CreateScope())
         {
-            Assert.Equal(heldId, Assert.Single(await ClaimAsync(queue, scope.ServiceProvider, 10)));
+            Assert.Equal(heldId, Assert.Single(await ClaimAsync(queue, scope.ServiceProvider, 10)).Id);
         }
     }
 
@@ -133,7 +138,7 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
     [MemberData(nameof(Queues))]
     public async Task Concurrent_claimers_never_take_two_messages_of_one_partition(QueueKind queue)
     {
-        await using var host = MessagingHost.Start(ConnectionString);
+        await using var host = StartHost();
         var madeProgress = false;
 
         for (var round = 0; round < 6; round++)
@@ -161,9 +166,9 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
             Assert.True(
                 claimed.Count <= 1,
                 $"Round {round} of partition {partition} claimed "
-                + $"[{string.Join(" | ", batches.Select(batch => string.Join(",", batch)))}] "
+                + $"[{string.Join(" | ", batches.Select(batch => string.Join(",", batch.Select(claim => claim.Id))))}] "
                 + $"while first={firstId} and second={secondId}.");
-            Assert.All(claimed, id => Assert.Equal(firstId, id));
+            Assert.All(claimed, claim => Assert.Equal(firstId, claim.Id));
             Assert.Equal("Pending", await StatusAsync(queue, secondId));
 
             madeProgress |= claimed.Count == 1;
@@ -172,91 +177,13 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
         Assert.True(madeProgress, "No claim round made progress, so the partition was never claimed.");
     }
 
-    /// <summary>
-    /// The two durable queues of docs/TECHNICAL.md section 15. Each one owns its own claim
-    /// statement, so every claim assertion is made against both of them.
-    /// </summary>
-    public enum QueueKind
-    {
-        Inbox,
-        Outbox,
-    }
+    private MessagingHost StartHost() =>
+        MessagingHost.Start(ConnectionString, options => options.ClaimLeaseDuration = Lease);
 
     /// <summary>
-    /// Reads the claim statement the store itself runs, so an in-flight claim in a test is the real
-    /// claim statement held open instead of a copy of it.
+    /// Runs the claim statement the store itself runs, with the same parameters the store binds, so
+    /// the claim the test holds open behaves exactly like a real one.
     /// </summary>
-    private static string ClaimSql(QueueKind queue) => (string)typeof(MessagingDbContext).Assembly
-        .GetType(
-            "WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence." + StoreTypeName(queue),
-            throwOnError: true)!
-        .GetField("ClaimSql", BindingFlags.NonPublic | BindingFlags.Static)!
-        .GetRawConstantValue()!;
-
-    private static string StoreTypeName(QueueKind queue) =>
-        queue == QueueKind.Inbox ? "InboxMessageStore" : "OutboxMessageStore";
-
-    private static string Table(QueueKind queue) =>
-        queue == QueueKind.Inbox ? "messaging.inbox_message" : "messaging.outbox_message";
-
-    private static string StatusColumn(QueueKind queue) =>
-        queue == QueueKind.Inbox ? "processing_status" : "delivery_status";
-
-    private Task<string> StatusAsync(QueueKind queue, long id) =>
-        Catalog.ScalarAsync($"SELECT {StatusColumn(queue)} FROM {Table(queue)} WHERE id = {id}");
-
-    private Task<string> AttemptsAsync(QueueKind queue, long id) =>
-        Catalog.ScalarAsync($"SELECT attempts FROM {Table(queue)} WHERE id = {id}");
-
-    private static async Task<long> EnqueueAsync(
-        QueueKind queue,
-        IServiceProvider services,
-        string partitionKey,
-        string suffix)
-    {
-        if (queue == QueueKind.Inbox)
-        {
-            var inbound = services.GetRequiredService<IInboundMessageQueue>();
-
-            return (await inbound.EnqueueAsync(MessagingSamples.Inbound($"wamid.{suffix}", partitionKey))).InboxMessageId;
-        }
-
-        var outbound = services.GetRequiredService<IOutboundMessageQueue>();
-
-        return await outbound.EnqueueAsync(MessagingSamples.Outbound(
-            conversationId: long.Parse(partitionKey, CultureInfo.InvariantCulture),
-            customerExternalId: $"20100{suffix}"));
-    }
-
-    private static async Task<IReadOnlyList<long>> ClaimAsync(
-        QueueKind queue,
-        IServiceProvider services,
-        int batchSize)
-    {
-        if (queue == QueueKind.Inbox)
-        {
-            var inbox = services.GetRequiredService<IInboxMessageStore>();
-
-            return [.. (await inbox.ClaimAsync(batchSize)).Select(message => message.Id)];
-        }
-
-        var outbox = services.GetRequiredService<IOutboxMessageStore>();
-
-        return [.. (await outbox.ClaimAsync(batchSize)).Select(message => message.Id)];
-    }
-
-    private static async Task CompleteAsync(QueueKind queue, IServiceProvider services, long id)
-    {
-        if (queue == QueueKind.Inbox)
-        {
-            await services.GetRequiredService<IInboxMessageStore>().CompleteAsync(id);
-
-            return;
-        }
-
-        await services.GetRequiredService<IOutboxMessageStore>().CompleteAsync(id, $"wamid.sent.{id}");
-    }
-
     private static async Task<IReadOnlyList<long>> ClaimInFlightAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -265,6 +192,8 @@ public sealed class PartitionClaimSerializationTests(PostgresContainerFixture po
     {
         await using var command = new NpgsqlCommand(ClaimSql(queue), connection, transaction);
         command.Parameters.AddWithValue("batch_size", batchSize);
+        command.Parameters.AddWithValue("claim_token", Guid.NewGuid());
+        command.Parameters.AddWithValue("claim_lease", Lease);
 
         var claimed = new List<long>();
 

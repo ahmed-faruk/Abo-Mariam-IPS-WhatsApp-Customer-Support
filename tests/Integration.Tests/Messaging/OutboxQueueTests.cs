@@ -103,8 +103,9 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
         Assert.Equal(ReplyBody, claimed.Body);
         Assert.Equal("corr-11", claimed.CorrelationId);
         Assert.Null(claimed.ProviderMessageId);
+        Assert.Equal($"outbox:{id}", claimed.DeliveryKey);
 
-        await store.CompleteAsync(id, "wamid.sent-1");
+        await store.CompleteAsync(claimed.Id, claimed.ClaimToken, "wamid.sent-1");
 
         Assert.Equal("Sent", await OutboxStatusAsync(id));
         Assert.Equal("wamid.sent-1", await Catalog.ScalarAsync(
@@ -126,13 +127,19 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
         await using var scope = host.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IOutboxMessageStore>();
 
-        Assert.Equal(id, Assert.Single(await store.ClaimAsync(10)).Id);
-        Assert.Equal(QueueFailureOutcome.RetryScheduled, await store.FailAsync(id, "Meta returned 500"));
+        var claimed = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(id, claimed.Id);
+        Assert.Equal(
+            QueueFailureOutcome.RetryScheduled,
+            await store.FailAsync(claimed.Id, claimed.ClaimToken, "Meta returned 500"));
 
         await MakeOutboxDueAsync(id);
 
-        Assert.Equal(id, Assert.Single(await store.ClaimAsync(10)).Id);
-        await store.CompleteAsync(id, "wamid.sent-2");
+        var retried = Assert.Single(await store.ClaimAsync(10));
+
+        Assert.Equal(id, retried.Id);
+        await store.CompleteAsync(retried.Id, retried.ClaimToken, "wamid.sent-2");
 
         Assert.Equal("Sent", await OutboxStatusAsync(id));
         Assert.Equal(storedBody, await Catalog.ScalarAsync($"SELECT body FROM messaging.outbox_message WHERE id = {id}"));
@@ -159,7 +166,7 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
             Assert.Equal(attempt, claimed.Attempts);
             Assert.Equal(5, claimed.MaxAttempts);
 
-            var outcome = await store.FailAsync(id, $"failure {attempt}");
+            var outcome = await store.FailAsync(claimed.Id, claimed.ClaimToken, $"failure {attempt}");
 
             Assert.Equal(
                 attempt < 5 ? QueueFailureOutcome.RetryScheduled : QueueFailureOutcome.DeadLettered,

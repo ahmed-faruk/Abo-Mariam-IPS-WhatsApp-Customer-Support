@@ -16,7 +16,10 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
             table.HasCheckConstraint(
                 "ck_outbox_status",
                 "delivery_status IN ('Pending','Claimed','Sent','Failed','DeadLettered')");
-            table.HasCheckConstraint("ck_outbox_body_hash", "body_hash = sha256(body::bytea)");
+            // The stored hash is the one the application computes over the literal UTF-8 body bytes.
+            // "body::bytea" would instead parse backslash and "\x" escape notation inside the text,
+            // so a reply that merely contains such characters would fail to enqueue.
+            table.HasCheckConstraint("ck_outbox_body_hash", "body_hash = sha256(convert_to(body, 'UTF8'))");
         });
 
         builder.HasKey(message => message.Id);
@@ -45,6 +48,8 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         builder.Property(message => message.MaxAttempts).HasColumnName("max_attempts").HasDefaultValue(5);
         builder.Property(message => message.RunAfter).HasColumnName("run_after").HasDefaultValueSql("now()");
         builder.Property(message => message.ClaimedAt).HasColumnName("claimed_at");
+        builder.Property(message => message.ClaimToken).HasColumnName("claim_token");
+        builder.Property(message => message.ClaimExpiresAt).HasColumnName("claim_expires_at");
         builder.Property(message => message.SentAt).HasColumnName("sent_at");
         builder.Property(message => message.LastError).HasColumnName("last_error");
         builder.Property(message => message.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
