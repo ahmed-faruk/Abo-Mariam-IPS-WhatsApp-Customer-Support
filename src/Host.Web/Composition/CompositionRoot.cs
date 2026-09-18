@@ -1,4 +1,4 @@
-using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
+using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
@@ -34,7 +34,7 @@ public static class CompositionRoot
                 + "environment variable; never commit credentials.");
         }
 
-        services.AddCatalogPersistence(connectionString);
+        services.AddCatalogModule(connectionString);
         services.AddConversationPersistence(connectionString);
         services.AddMessagingModule(connectionString);
         services.AddStorefrontPersistence(connectionString);

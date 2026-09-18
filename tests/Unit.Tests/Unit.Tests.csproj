@@ -21,4 +21,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="../../src/Modules/Catalog/Catalog.csproj" />
+  </ItemGroup>
+
 </Project>
