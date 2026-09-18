@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Modules/Catalog/Catalog.csproj" />
+    <ProjectReference Include="../../src/Modules/Storefront/Storefront.csproj" />
   </ItemGroup>
 
 </Project>
