@@ -772,9 +772,9 @@ Use at least 50 realistic Egyptian-Arabic utterances covering:
 - out-of-scope;
 - prompt injection.
 
-## 13.3 Demo acceptance targets
+## 13.3 AI acceptance policy
 
-For proof-of-concept:
+### General benchmark gate — Pilot/Production acceptance
 
 - intent accuracy ≥ 90%;
 - hard-budget classification: 100% on the dedicated hard-budget cases;
@@ -783,10 +783,46 @@ For proof-of-concept:
 - warm NLU median target ≤ 8 seconds;
 - warm NLU p95 target ≤ 12 seconds.
 
-The latency values are demo engineering targets, **not production SLAs**.
+The latency values are demo engineering targets, **not production SLAs**, and are revalidated on
+the pilot host rather than inherited from the Mac (section 19).
 
 If 2B quality passes but latency is poor, test `qwen3:1.7b`.
 If 2B latency is acceptable but quality is insufficient, a 4B candidate may be tested, but it is not assumed to be acceptable on this CPU-only Mac.
+
+### Issue #8 general benchmark result — recorded as a failure
+
+The measured Intel Mac candidate `qwen3.5:2b-q4_K_M` **FAILS the general benchmark**: intent
+accuracy 62.3% against the ≥ 90% threshold. Schema success 100%, hard-budget classification 100%
+(10/10), warm median 6.41 s and warm p95 8.17 s passed, so the outcome is
+quality-fail/latency-pass. `qwen3.5:4b-q4_K_M` was blocked during warm-up and has **no measured
+metrics**; `qwen3:1.7b` was not tested because its branch (quality pass / latency fail) did not
+occur. This result is historical evidence and is not rewritten by any later acceptance path; the
+measured report stays in `benchmarks/Issue8.NluBenchmark/reports/`.
+
+### Controlled Client Demo exception
+
+The local Intel Mac demo is a controlled, scripted proof-of-concept, so it has its own acceptance
+path. A measured configuration MAY be frozen as a **Controlled Demo Candidate** when all of the
+following hold:
+
+- its general intent quality fails the general benchmark above;
+- hard-budget safety passes (100% on the dedicated cases);
+- schema reliability passes (≥ 98% after one retry);
+- local warm latency is acceptable;
+- commercial facts stay deterministic and current from PostgreSQL;
+- no suitable stronger local candidate is available on the local baseline.
+
+Freezing a Controlled Demo Candidate additionally requires the versioned Demo-Critical Scenario
+Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) to pass in two consecutive complete post-warm runs, and
+the general benchmark failure stays documented next to it (sections 16, 17). That gate document is
+the authoritative operational definition of the gate — its scenario list, its between-run reset, its
+exact run mechanics, its latency calculation and its evidence recording — and this plan does not
+restate those mechanics.
+
+A Controlled Demo Candidate is **not** a general benchmark pass and does **not** confer
+Pilot/Production acceptance. Promoting any AI configuration to Pilot/Production still requires the
+general benchmark gate above re-measured on the intended hosting environment and model
+configuration (section 19).
 
 ## 13.4 Pre-warm rule
 
@@ -891,6 +927,19 @@ This proves:
 - admin changes are reflected immediately;
 - human takeover exists.
 
+Two safety preflights accompany the script without new business behavior:
+
+- duplicate inbound: replay the same inbound message/id and confirm exactly one outbound reply;
+- Ollama unavailable: with the model unreachable, confirm the fixed safe fallback/human option and
+  that no commercial fact is invented.
+
+The preflights may be executed as preflight checks rather than shown theatrically during the client
+session. The frozen, versioned form of this script — including both preflights — is
+`docs/demo/DEMO-CRITICAL-GATE-v1.md` (v1), the authoritative operational definition of the gate: it
+must pass in two consecutive complete post-warm runs before the client presentation, and that
+document — not this section — defines the scenario list, the between-run reset, the run mechanics,
+the latency calculation and the evidence recording.
+
 ---
 
 # 17. Client-demo Definition of Done
@@ -900,7 +949,11 @@ The proof-of-concept is ready when:
 - solution builds on the Intel Mac;
 - PostgreSQL migrations apply from zero;
 - all PR quality gates are green;
-- selected AI candidate passes the Mac benchmark;
+- the selected **Controlled Demo Candidate** configuration is frozen (section 13.3) and its Issue #8
+  general benchmark failure/limitations stay documented;
+- the versioned Demo-Critical Scenario Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) passes in two
+  consecutive complete post-warm executions, with its operational mechanics — scenarios, between-run
+  reset, timing and evidence — taken from that document and not restated here;
 - webhook verification works through HTTPS tunnel;
 - one real WhatsApp inbound produces one real outbound reply;
 - duplicate inbound cannot produce duplicate reply;
@@ -912,6 +965,9 @@ The proof-of-concept is ready when:
 - Ollama failure produces safe fallback;
 - DB/Ollama are not publicly exposed;
 - pre-demo smoke run succeeds twice consecutively.
+
+Controlled Demo acceptance is client-demo acceptance only. It does not make the frozen
+configuration a Pilot/Production candidate; that promotion is defined in section 19.
 
 No production availability, production latency or high-concurrency claim is required at this stage.
 
@@ -952,11 +1008,21 @@ When the client asks to leave the system running 24/7:
 - provision a Linux VPS;
 - deploy the same application/module design;
 - run PostgreSQL backup/restore plan;
-- benchmark the chosen model on the VPS CPU;
+- benchmark the intended AI model on the intended hosting environment, and only then treat it as a
+  pilot/production candidate: general intent accuracy ≥ 90% (section 13.3), hard-budget
+  classification 100%, structured schema success ≥ 98% after one retry, and latency targets
+  revalidated for that host;
 - replace Quick Tunnel with stable production ingress;
 - run the **pilot** load gate (≥20 concurrent simulated conversations);
+- run the existing live smoke gates on the intended pilot environment, with an explicit finish line:
+  every applicable live smoke gate must PASS there and the pass/fail evidence must be recorded;
+  promotion to pilot/production cannot proceed on a failed or incomplete smoke gate;
 - revalidate Meta terms/pricing current at that date;
 - only then call the environment a pilot/production candidate.
+
+Stronger hardware and a stronger or replacement model are permitted for that step. No future vendor
+or model is selected now, and the business modules, commercial-fact ownership and the replaceable
+AI adapter boundary do not change.
 
 No code rewrite should be necessary because macOS-specific behavior is limited to the local runtime/adapters, not business modules.
 
