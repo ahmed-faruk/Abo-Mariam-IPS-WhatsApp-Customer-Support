@@ -813,8 +813,11 @@ following hold:
 - no suitable stronger local candidate is available on the local baseline.
 
 Freezing a Controlled Demo Candidate additionally requires the versioned Demo-Critical Scenario
-Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) to pass 100% of its scenarios in two consecutive
-post-warm runs, and the general benchmark failure stays documented next to it (sections 16, 17).
+Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) to pass in two consecutive complete post-warm runs, and
+the general benchmark failure stays documented next to it (sections 16, 17). That gate document is
+the authoritative operational definition of the gate — its scenario list, its between-run reset, its
+exact run mechanics, its latency calculation and its evidence recording — and this plan does not
+restate those mechanics.
 
 A Controlled Demo Candidate is **not** a general benchmark pass and does **not** confer
 Pilot/Production acceptance. Promoting any AI configuration to Pilot/Production still requires the
@@ -932,8 +935,10 @@ Two safety preflights accompany the script without new business behavior:
 
 The preflights may be executed as preflight checks rather than shown theatrically during the client
 session. The frozen, versioned form of this script — including both preflights — is
-`docs/demo/DEMO-CRITICAL-GATE-v1.md` (v1), which is the acceptance artifact: it must pass 100% of
-its scenarios in two consecutive post-warm runs before the client presentation.
+`docs/demo/DEMO-CRITICAL-GATE-v1.md` (v1), the authoritative operational definition of the gate: it
+must pass in two consecutive complete post-warm runs before the client presentation, and that
+document — not this section — defines the scenario list, the between-run reset, the run mechanics,
+the latency calculation and the evidence recording.
 
 ---
 
@@ -946,8 +951,9 @@ The proof-of-concept is ready when:
 - all PR quality gates are green;
 - the selected **Controlled Demo Candidate** configuration is frozen (section 13.3) and its Issue #8
   general benchmark failure/limitations stay documented;
-- the versioned Demo-Critical Scenario Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) passes at 100% in
-  two consecutive post-warm executions;
+- the versioned Demo-Critical Scenario Gate (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) passes in two
+  consecutive complete post-warm executions, with its operational mechanics — scenarios, between-run
+  reset, timing and evidence — taken from that document and not restated here;
 - webhook verification works through HTTPS tunnel;
 - one real WhatsApp inbound produces one real outbound reply;
 - duplicate inbound cannot produce duplicate reply;
@@ -1008,7 +1014,9 @@ When the client asks to leave the system running 24/7:
   revalidated for that host;
 - replace Quick Tunnel with stable production ingress;
 - run the **pilot** load gate (≥20 concurrent simulated conversations);
-- run the existing live smoke gates on the pilot environment;
+- run the existing live smoke gates on the intended pilot environment, with an explicit finish line:
+  every applicable live smoke gate must PASS there and the pass/fail evidence must be recorded;
+  promotion to pilot/production cannot proceed on a failed or incomplete smoke gate;
 - revalidate Meta terms/pricing current at that date;
 - only then call the environment a pilot/production candidate.
 

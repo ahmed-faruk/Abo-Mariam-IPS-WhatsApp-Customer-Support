@@ -508,11 +508,17 @@ The frozen candidate also fixes the request shape and lifecycle:
 stream: false
 think: false
 structured output: the committed JSON schema of section 8.3
+PromptVersion: nlu-system-prompt-v3
+PromptSha256: 2139120c08b3ad01a5389f986ae6a4a7e884da372591a951a6efaea225237d3a
 retry: one corrective retry maximum, only when an actual model reply is invalid, unparsable or
        schema-invalid; a transport timeout or connectivity failure is never schema-retried and
        stays visible as an infrastructure failure
 pre-warm: required before the client demo (section 29)
 ```
+
+`PromptSha256` is the SHA-256 of the runtime UTF-8 bytes of `NluSystemPrompt.Text` (lowercase
+hexadecimal), not the hash of the source file: the frozen prompt content is identified by the exact
+value the application sends. `PromptVersion` is the version string carried by `NluContract`.
 
 This section is the single place the demo AI configuration is written down. The Intelligence
 adapter of Issue #10 consumes exactly these values and owns adding the `Ai` section to the host
@@ -1262,8 +1268,10 @@ general quality fail
   + acceptable local warm latency
   + no suitable stronger local candidate
 → the measured 2B configuration may be frozen as a Controlled Demo Candidate (section 8.2);
-  the client presentation still requires docs/demo/DEMO-CRITICAL-GATE-v1.md to pass 100% of its
-  scenarios in two consecutive post-warm runs (section 29)
+  the client presentation still requires the complete gate of docs/demo/DEMO-CRITICAL-GATE-v1.md to
+  pass in two consecutive post-warm runs (section 29). That document is the authoritative
+  operational definition of the gate — scenario list, between-run reset, exact run mechanics,
+  latency calculation and evidence recording — and this section does not restate those mechanics.
 ```
 
 This exception never re-labels the general benchmark as a pass and never promotes the configuration
@@ -1337,8 +1345,9 @@ Ready when:
 - module migrations apply from zero;
 - unit/architecture/integration/contract/E2E/Playwright CI gates pass;
 - the Controlled Demo Candidate configuration of section 8.2 is frozen;
-- `docs/demo/DEMO-CRITICAL-GATE-v1.md` passes 100% of its scenarios in two consecutive post-warm
-  executions;
+- the complete `docs/demo/DEMO-CRITICAL-GATE-v1.md` gate passes in two consecutive post-warm
+  executions, with its operational mechanics — scenarios, between-run reset, timing and evidence —
+  taken from that document;
 - webhook HTTPS verification succeeds;
 - live WhatsApp inbound/outbound succeeds;
 - duplicate inbound gives one response;

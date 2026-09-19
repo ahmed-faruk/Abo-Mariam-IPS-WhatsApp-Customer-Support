@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using WhatsAppMonitorAssistant.Benchmarks.Nlu;
 
@@ -20,6 +21,9 @@ public sealed class ControlledDemoPolicyTests
     private const string DatasetSha256 = "a00232ad824548eb806ac0a79141f2d9f12f0e70f4b0b962b283f838a6c3570b";
     private const string SchemaSha256 = "fb9eacee28dcf31f6438fbe63092a8b48abb42cf5c592f4edd06874b2f1d4302";
     private const string PromptVersion = "nlu-system-prompt-v3";
+
+    // SHA-256 over the runtime UTF-8 bytes of NluSystemPrompt.Text, not over the source file.
+    private const string PromptSha256 = "2139120c08b3ad01a5389f986ae6a4a7e884da372591a951a6efaea225237d3a";
 
     private const string PlanDocument = "docs/PLAN.md";
     private const string TechnicalDocument = "docs/TECHNICAL.md";
@@ -246,6 +250,110 @@ public sealed class ControlledDemoPolicyTests
         Assert.Contains("not pilot/production acceptance", text, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(PlanDocument)]
+    [InlineData(TechnicalDocument)]
+    public void Plans_keep_only_the_policy_invariant_and_delegate_the_gate_mechanics(string relativePath)
+    {
+        var text = RepoFlowed(relativePath);
+
+        Assert.Contains("DEMO-CRITICAL-GATE-v1.md", text, StringComparison.Ordinal);
+        Assert.Contains("authoritative operational definition", text, StringComparison.Ordinal);
+        Assert.Contains("does not restate those mechanics", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Gate_defines_the_between_run_reset_before_run_two()
+    {
+        var text = RepoFlowed(GateDocument);
+
+        Assert.Contains("Between-run reset (required before Run 2)", text, StringComparison.Ordinal);
+        Assert.Contains("restore the demo catalogue price", text, StringComparison.Ordinal);
+        Assert.Contains("restore the referenced Dell product's quantity", text, StringComparison.Ordinal);
+        Assert.Contains("restore the original Storefront working-hours value", text, StringComparison.Ordinal);
+        Assert.Contains("Re-run the two-request pre-warm", text, StringComparison.Ordinal);
+        Assert.Contains("fresh conversation in AI mode", text, StringComparison.Ordinal);
+        Assert.Contains("no prior reference state may leak", text, StringComparison.Ordinal);
+        Assert.Contains("use fresh run-scoped inbound and provider message identifiers", text, StringComparison.Ordinal);
+        Assert.Contains("evidence (section H) before Run 2 starts", text, StringComparison.Ordinal);
+        Assert.Contains("If any reset step fails, Run 2 must not start", text, StringComparison.Ordinal);
+        Assert.Contains("does not break \"two consecutive runs\"", text, StringComparison.Ordinal);
+        Assert.Contains("no failed acceptance attempt inserted between the two runs", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Gate_defines_a_reproducible_ollama_outage_injection()
+    {
+        var text = RepoFlowed(GateDocument);
+
+        Assert.Contains("curl http://127.0.0.1:11434/api/version", text, StringComparison.Ordinal);
+        Assert.Contains("quit the Ollama app", text, StringComparison.Ordinal);
+        Assert.Contains("ollama serve", text, StringComparison.Ordinal);
+        Assert.Contains("connection refused", text, StringComparison.Ordinal);
+        Assert.Contains("no schema retry on the transport failure", text, StringComparison.Ordinal);
+        Assert.Contains("no price, stock, specification or FAQ value is fabricated", text, StringComparison.Ordinal);
+        Assert.Contains("**Restoration**", text, StringComparison.Ordinal);
+        Assert.Contains("before any further gate run or the client presentation", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Gate_makes_latency_part_of_each_run_result()
+    {
+        var text = RepoFlowed(GateDocument);
+
+        Assert.Contains("DEMO-01 … DEMO-10", text, StringComparison.Ordinal);
+        Assert.Contains("IAiNluClient.AnalyzeAsync", text, StringComparison.Ordinal);
+        Assert.Contains("warm median must be **<= 8 s**", text, StringComparison.Ordinal);
+        Assert.Contains("warm p95 must be **<= 12 s**", text, StringComparison.Ordinal);
+        Assert.Contains("A breach of either limit FAILS that complete run", text, StringComparison.Ordinal);
+        Assert.Contains("PercentileCalculator.cs", text, StringComparison.Ordinal);
+        Assert.Contains(
+            "and median <= 8 s and p95 <= 12 s over DEMO-01 … DEMO-10",
+            text,
+            StringComparison.Ordinal);
+        Assert.Contains("Run 1: PASS/FAIL functional 13/13?", text, StringComparison.Ordinal);
+        Assert.Contains("Run 2: PASS/FAIL functional 13/13?", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Gate_hard_budget_scenario_cannot_pass_on_a_fallback()
+    {
+        var text = RepoFlowed(GateDocument);
+
+        Assert.Contains("DEMO-04 Hard budget (CRITICAL)", text, StringComparison.Ordinal);
+        Assert.Contains("`ProductSearch` routing; `Hard` budget type with the ceiling exactly 2500", text, StringComparison.Ordinal);
+        Assert.Contains("no returned recommendation exceeds 2500", text, StringComparison.Ordinal);
+        Assert.Contains("documented deterministic \"no match under this hard ceiling\" behaviour", text, StringComparison.Ordinal);
+        Assert.Contains("a generic fallback", text, StringComparison.Ordinal);
+        Assert.Contains("a clarification caused by failing to extract the explicit ceiling", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Frozen_prompt_identity_matches_the_runtime_prompt_bytes()
+    {
+        var runtimeBytes = Encoding.UTF8.GetBytes(NluSystemPrompt.Text);
+        var runtimeSha256 = Convert.ToHexString(SHA256.HashData(runtimeBytes)).ToLowerInvariant();
+
+        Assert.Equal(PromptVersion, NluSystemPrompt.Version);
+        Assert.Equal(PromptVersion, NluContract.PromptVersion);
+        Assert.Equal(PromptSha256, runtimeSha256);
+
+        var technical = RepoFile(TechnicalDocument);
+
+        Assert.Contains($"PromptVersion: {PromptVersion}", technical, StringComparison.Ordinal);
+        Assert.Contains($"PromptSha256: {PromptSha256}", technical, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Pilot_transition_requires_passing_smoke_gates_with_recorded_evidence()
+    {
+        var plan = RepoFile(PlanDocument);
+
+        Assert.Contains("every applicable live smoke gate must PASS", plan, StringComparison.Ordinal);
+        Assert.Contains("the pass/fail evidence must be recorded", plan, StringComparison.Ordinal);
+        Assert.Contains("failed or incomplete smoke gate", plan, StringComparison.Ordinal);
+    }
+
     private static string RepoFile(string relativePath)
     {
         var path = Path.Combine(
@@ -255,6 +363,13 @@ public sealed class ControlledDemoPolicyTests
         Assert.True(File.Exists(path), $"Expected {relativePath} to exist in the repository.");
         return File.ReadAllText(path);
     }
+
+    /// <summary>
+    /// The same document with every whitespace run collapsed to one space, so a checked statement
+    /// can span a Markdown line wrap without pinning the wrap itself.
+    /// </summary>
+    private static string RepoFlowed(string relativePath) =>
+        string.Join(' ', RepoFile(relativePath).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static string[] RepoLines(string relativePath) =>
         [.. RepoFile(relativePath).Split('\n').Select(line => line.TrimEnd('\r'))];
