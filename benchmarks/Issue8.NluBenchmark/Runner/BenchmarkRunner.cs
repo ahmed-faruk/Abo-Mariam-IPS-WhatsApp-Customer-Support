@@ -76,10 +76,10 @@ public sealed class BenchmarkRunner
     }
 
     /// <summary>
-    /// A run whose every case failed on transport is an infrastructure failure, not a model
-    /// result, so the caller can exit non-zero without pretending the model was measured.
+    /// A run that contains any transport failure is infrastructure-failure evidence, not a
+    /// model result: an outage that starts mid-run must never be scored as poor model quality,
+    /// so the caller exits non-zero without evaluating any quality gate.
     /// </summary>
     public static bool IsInfrastructureFailure(RunArtifact artifact) =>
-        artifact.Cases.Length > 0
-        && artifact.Cases.All(testCase => testCase.Attempts.All(attempt => attempt.TransportFailure is not null));
+        artifact.Cases.Any(testCase => testCase.Attempts.Any(attempt => attempt.TransportFailure is not null));
 }

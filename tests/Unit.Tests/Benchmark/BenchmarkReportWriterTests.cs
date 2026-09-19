@@ -173,4 +173,77 @@ public sealed class BenchmarkReportWriterTests : IDisposable
 
         Assert.Contains("| run1 | n/a | n/a | n/a | n/a | n/a |", File.ReadAllText(outputs.MarkdownPath), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Timing_objects_without_token_counts_are_not_reported_as_zero()
+    {
+        // Ollama can return a timing object that omits prompt_eval_count / eval_count. That is
+        // missing evidence, so the report shows n/a rather than a manufactured zero.
+        var timing = new NluTransportTiming { TotalDurationNanoseconds = 3_000_000_000 };
+        var run = BenchmarkFixtures.Run(
+            "run1",
+            BenchmarkFixtures.Execution("PS-001", BenchmarkFixtures.Expected("PS-001"), timing: timing),
+            BenchmarkFixtures.Execution("PS-002", BenchmarkFixtures.Expected("PS-002"), timing: timing));
+        var evaluation = BenchmarkEvaluator.Evaluate(BenchmarkFixtures.Manifest, BenchmarkFixtures.Dataset, [run]);
+
+        var outputs = BenchmarkReportWriter.Write(
+            _directory,
+            [run],
+            evaluation,
+            BenchmarkFixtures.Manifest,
+            BenchmarkFixtures.Dataset);
+        var report = JsonSerializer.Deserialize<BenchmarkReport>(File.ReadAllText(outputs.JsonPath), BenchmarkJson.Options)!;
+        var summary = Assert.Single(report.Runs);
+
+        Assert.Null(summary.PromptEvalTokens);
+        Assert.Null(summary.EvalTokens);
+        Assert.Contains("| run1 | n/a | n/a | n/a | n/a | n/a |", File.ReadAllText(outputs.MarkdownPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_explicit_zero_token_count_stays_a_measured_zero()
+    {
+        var timing = new NluTransportTiming { PromptEvalCount = 0, EvalCount = 0 };
+        var run = BenchmarkFixtures.Run(
+            "run1",
+            BenchmarkFixtures.Execution("PS-001", BenchmarkFixtures.Expected("PS-001"), timing: timing));
+        var evaluation = BenchmarkEvaluator.Evaluate(BenchmarkFixtures.Manifest, BenchmarkFixtures.Dataset, [run]);
+
+        var outputs = BenchmarkReportWriter.Write(
+            _directory,
+            [run],
+            evaluation,
+            BenchmarkFixtures.Manifest,
+            BenchmarkFixtures.Dataset);
+        var report = JsonSerializer.Deserialize<BenchmarkReport>(File.ReadAllText(outputs.JsonPath), BenchmarkJson.Options)!;
+        var summary = Assert.Single(report.Runs);
+
+        Assert.Equal(0, summary.PromptEvalTokens);
+        Assert.Equal(0, summary.EvalTokens);
+        Assert.Contains("| run1 | 0 | 0 |", File.ReadAllText(outputs.MarkdownPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Only_real_token_counts_are_summed()
+    {
+        var measured = new NluTransportTiming { PromptEvalCount = 100, EvalCount = 12 };
+        var incomplete = new NluTransportTiming { TotalDurationNanoseconds = 1_000_000_000 };
+        var run = BenchmarkFixtures.Run(
+            "run1",
+            BenchmarkFixtures.Execution("PS-001", BenchmarkFixtures.Expected("PS-001"), timing: measured),
+            BenchmarkFixtures.Execution("PS-002", BenchmarkFixtures.Expected("PS-002"), timing: incomplete));
+        var evaluation = BenchmarkEvaluator.Evaluate(BenchmarkFixtures.Manifest, BenchmarkFixtures.Dataset, [run]);
+
+        var outputs = BenchmarkReportWriter.Write(
+            _directory,
+            [run],
+            evaluation,
+            BenchmarkFixtures.Manifest,
+            BenchmarkFixtures.Dataset);
+        var report = JsonSerializer.Deserialize<BenchmarkReport>(File.ReadAllText(outputs.JsonPath), BenchmarkJson.Options)!;
+        var summary = Assert.Single(report.Runs);
+
+        Assert.Equal(100, summary.PromptEvalTokens);
+        Assert.Equal(12, summary.EvalTokens);
+    }
 }

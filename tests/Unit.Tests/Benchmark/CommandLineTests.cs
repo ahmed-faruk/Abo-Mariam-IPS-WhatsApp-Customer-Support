@@ -54,6 +54,9 @@ public sealed class CommandLineTests
     [InlineData(new[] { "run" }, "requires --run-id")]
     [InlineData(new[] { "run", "--run-id", ".." }, "letters, digits")]
     [InlineData(new[] { "report", "--runs", "run1" }, "requires --runs")]
+    [InlineData(new[] { "report", "--runs", "run1,run2,run3" }, "exactly two")]
+    [InlineData(new[] { "report", "--runs", "run1,run1" }, "distinct")]
+    [InlineData(new[] { "report" }, "requires --runs")]
     public void Invalid_invocations_are_rejected_with_a_clear_message(string[] args, string expectedMessage)
     {
         var exception = Assert.Throws<UsageException>(() => CommandLine.Parse(args));

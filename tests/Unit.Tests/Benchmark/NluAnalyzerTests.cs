@@ -95,7 +95,7 @@ public sealed class NluAnalyzerTests
     }
 
     [Fact]
-    public async Task A_transport_failure_is_recorded_and_retried_once()
+    public async Task A_transport_failure_never_triggers_a_schema_corrective_retry()
     {
         var gateway = new ScriptedGateway(
             ScriptedGateway.TransportFailure,
@@ -106,24 +106,54 @@ public sealed class NluAnalyzerTests
             BenchmarkFixtures.CreateCase("PS-001", Expected),
             CancellationToken.None);
 
-        Assert.True(execution.SchemaValid);
+        Assert.False(execution.SchemaValid);
+        Assert.False(execution.Retried);
+        Assert.Single(execution.Attempts);
         Assert.Equal("scripted transport failure", execution.Attempts[0].TransportFailure);
-        Assert.Equal(2, gateway.Requests.Count);
+        Assert.Contains("transport-failure", execution.FailureReason, StringComparison.Ordinal);
+        Assert.Single(gateway.Requests);
     }
 
     [Fact]
-    public async Task Latency_is_recorded_per_attempt_and_for_the_whole_case()
+    public async Task A_transport_failure_cannot_disappear_behind_a_later_valid_response()
     {
-        var gateway = new ScriptedGateway("not json", """{"intent":"ProductSearch","requiredPorts":[],"grades":[],"budgetType":"None"}""");
+        var gateway = new ScriptedGateway(
+            ScriptedGateway.TransportFailure,
+            """{"intent":"ProductSearch","requiredPorts":[],"grades":[],"budgetType":"None"}""");
         var analyzer = BenchmarkFixtures.CreateAnalyzer(gateway);
 
         var execution = await analyzer.AnalyzeAsync(
             BenchmarkFixtures.CreateCase("PS-001", Expected),
             CancellationToken.None);
 
+        // The scripted valid reply is still queued: the outage stays visible as infrastructure
+        // evidence instead of being scored as a successful case.
+        Assert.Single(gateway.Requests);
+        Assert.False(execution.SchemaValid);
+        Assert.Null(execution.Output);
+    }
+
+    [Fact]
+    public async Task Latency_comes_from_the_independently_measured_attempt_durations()
+    {
+        // Durations are authored by the test and injected through the timing seam, so the
+        // assertion does not restate the production getters it is meant to check.
+        var clock = new ManualTimeProvider();
+        var gateway = new TimedGateway(
+            clock,
+            ("not json at all", 1500),
+            ("""{"intent":"ProductSearch","requiredPorts":[],"grades":[],"budgetType":"None"}""", 250));
+        var analyzer = BenchmarkFixtures.CreateAnalyzer(gateway, timeProvider: clock);
+
+        var execution = await analyzer.AnalyzeAsync(
+            BenchmarkFixtures.CreateCase("PS-001", Expected),
+            CancellationToken.None);
+
         Assert.Equal(2, execution.Attempts.Length);
-        Assert.Equal(execution.Attempts[^1].WallClockMilliseconds, execution.FinalAttemptMilliseconds);
-        Assert.Equal(execution.Attempts.Sum(attempt => attempt.WallClockMilliseconds), execution.TotalMilliseconds);
+        Assert.Equal(1500, execution.Attempts[0].WallClockMilliseconds);
+        Assert.Equal(250, execution.Attempts[1].WallClockMilliseconds);
+        Assert.Equal(250, execution.FinalAttemptMilliseconds);
+        Assert.Equal(1750, execution.TotalMilliseconds);
     }
 
     private static string LastMessageContent(NluTransportRequest request)
@@ -131,5 +161,40 @@ public sealed class NluAnalyzerTests
         var messages = request.Body["messages"]!.AsArray();
 
         return messages[^1]!["content"]!.GetValue<string>();
+    }
+
+    /// <summary>A monotonic clock the tests advance by hand, in milliseconds.</summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private long _timestamp;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _timestamp;
+
+        public void Advance(long milliseconds) => _timestamp += milliseconds * TimeSpan.TicksPerMillisecond;
+    }
+
+    /// <summary>Returns each scripted reply after advancing the fake clock by its authored duration.</summary>
+    private sealed class TimedGateway : INluTransport
+    {
+        private readonly ManualTimeProvider _clock;
+        private readonly Queue<(string Content, long Milliseconds)> _script;
+
+        public TimedGateway(ManualTimeProvider clock, params (string Content, long Milliseconds)[] script)
+        {
+            _clock = clock;
+            _script = new Queue<(string Content, long Milliseconds)>(script);
+        }
+
+        public Task<NluTransportResponse> SendAsync(
+            NluTransportRequest request,
+            CancellationToken cancellationToken)
+        {
+            var next = _script.Dequeue();
+            _clock.Advance(next.Milliseconds);
+
+            return Task.FromResult(new NluTransportResponse { Content = next.Content });
+        }
     }
 }

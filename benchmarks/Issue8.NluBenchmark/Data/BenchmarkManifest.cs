@@ -122,6 +122,13 @@ public sealed record BenchmarkManifest
             errors.Add("dataset version and sha256 must not be empty");
         }
 
+        if (!string.Equals(Dataset.Path, RepositoryPaths.DatasetRelativePath, StringComparison.Ordinal))
+        {
+            errors.Add(
+                $"dataset path must be '{RepositoryPaths.DatasetRelativePath}' with the exact case of the "
+                + "tracked file (Linux runners are case-sensitive)");
+        }
+
         if (string.IsNullOrWhiteSpace(Schema.Version) || string.IsNullOrWhiteSpace(Schema.Sha256))
         {
             errors.Add("schema version and sha256 must not be empty");

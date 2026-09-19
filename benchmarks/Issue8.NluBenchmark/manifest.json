@@ -3,7 +3,7 @@
   "harnessVersion": "issue8-nlu-benchmark-1",
   "sourceDocument": "docs/TECHNICAL.md v3.2 section 8/9/28, docs/PLAN.md v3.2 section 13.3",
   "dataset": {
-    "path": "data/v1/cases.jsonl",
+    "path": "Data/v1/cases.jsonl",
     "version": "v1",
     "caseCount": 60,
     "sha256": "a00232ad824548eb806ac0a79141f2d9f12f0e70f4b0b962b283f838a6c3570b"

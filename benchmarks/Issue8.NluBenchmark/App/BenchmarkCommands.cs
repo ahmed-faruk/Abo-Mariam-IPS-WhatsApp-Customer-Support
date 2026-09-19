@@ -65,6 +65,7 @@ public static class BenchmarkCommands
         var (manifest, dataset) = LoadValidated(services);
         var runDirectory = Path.Combine(services.Paths.ResultsDirectory, "dry-run");
         var gateway = services.CreateFixtureGateway(dataset);
+        var store = services.CreateArtifactStore(runDirectory);
         var artifact = await ExecuteRunAsync(
             services,
             manifest,
@@ -74,10 +75,11 @@ public static class BenchmarkCommands
             RunModes.DryRun,
             manifest.DefaultCandidate.Model,
             manifest.DefaultCandidate.BaseUrl,
+            manifest.DefaultCandidate.TimeoutSeconds,
             new OllamaHealth("offline-fixture", ["offline-fixture"]),
             cancellationToken).ConfigureAwait(false);
 
-        new RunArtifactStore(runDirectory).Save(artifact);
+        store.SaveSynthetic(artifact);
 
         var evaluation = BenchmarkEvaluator.Evaluate(manifest, dataset, [artifact]);
         var outputs = BenchmarkReportWriter.Write(
@@ -153,7 +155,7 @@ public static class BenchmarkCommands
         if (lastAttempt.TransportFailure is not null)
         {
             return lastAttempt.TransportFailure.StartsWith(OllamaTimeoutPrefix, StringComparison.Ordinal)
-                ? "Ollama timed out on every attempt"
+                ? "Ollama timed out"
                 : $"Ollama request failed ({lastAttempt.TransportFailure})";
         }
 
@@ -187,6 +189,15 @@ public static class BenchmarkCommands
         var baseUrl = invocation.BaseUrl ?? manifest.DefaultCandidate.BaseUrl;
         var timeout = invocation.TimeoutSeconds ?? manifest.DefaultCandidate.TimeoutSeconds;
         var runId = invocation.RunId ?? throw new UsageException("The run command requires --run-id <id>.");
+        var store = services.CreateArtifactStore(services.Paths.ResultsDirectory);
+
+        if (store.Exists(runId))
+        {
+            throw new BenchmarkDataException(
+                $"Run artifact {store.PathFor(runId)} already exists. Issue #8 never overwrites raw run "
+                + "evidence; choose a new --run-id.");
+        }
+
         var gateway = services.CreateGateway(model, baseUrl, timeout);
         var health = await CheckModelAsync(gateway, model, baseUrl, cancellationToken).ConfigureAwait(false);
         var artifact = await ExecuteRunAsync(
@@ -198,17 +209,20 @@ public static class BenchmarkCommands
             RunModes.Live,
             model,
             baseUrl,
+            timeout,
             health,
             cancellationToken).ConfigureAwait(false);
 
-        var store = new RunArtifactStore(services.Paths.ResultsDirectory);
         store.Save(artifact);
 
         if (BenchmarkRunner.IsInfrastructureFailure(artifact))
         {
             throw new OllamaTransportException(
-                $"Every case failed on transport; {store.PathFor(runId)} was kept for diagnosis but no report was produced.");
+                $"At least one case produced no model reply; {store.PathFor(runId)} was kept for diagnosis, "
+                + "but no report was produced and no quality gate was evaluated.");
         }
+
+        RunCompatibility.Validate(manifest, dataset, [artifact]);
 
         var evaluation = BenchmarkEvaluator.Evaluate(manifest, dataset, [artifact]);
 
@@ -223,8 +237,14 @@ public static class BenchmarkCommands
     private static int ReportCommand(BenchmarkInvocation invocation, BenchmarkServices services)
     {
         var (manifest, dataset) = LoadValidated(services);
-        var store = new RunArtifactStore(services.Paths.ResultsDirectory);
+        var store = services.CreateArtifactStore(services.Paths.ResultsDirectory);
         var runs = invocation.Runs.Select(store.Load).ToArray();
+
+        if (runs.Length != 2)
+        {
+            throw new BenchmarkDataException(
+                "The report command requires exactly two measured passes after warm-up.");
+        }
 
         foreach (var run in runs)
         {
@@ -236,21 +256,12 @@ public static class BenchmarkCommands
             }
         }
 
-        if (runs.Select(run => run.Model).Distinct(StringComparer.Ordinal).Count() != 1)
-        {
-            throw new BenchmarkDataException("Both runs must measure the same model tag.");
-        }
-
-        if (runs.Select(run => run.DatasetSha256).Distinct(StringComparer.Ordinal).Count() != 1
-            || runs.Select(run => run.SchemaSha256).Distinct(StringComparer.Ordinal).Count() != 1)
-        {
-            throw new BenchmarkDataException("Both runs must use the same dataset and schema hashes.");
-        }
-
         if (runs.Select(run => run.RunId).Distinct(StringComparer.Ordinal).Count() != runs.Length)
         {
             throw new BenchmarkDataException("Each run id must be distinct.");
         }
+
+        RunCompatibility.Validate(manifest, dataset, runs);
 
         var evaluation = BenchmarkEvaluator.Evaluate(manifest, dataset, runs);
         var outputs = BenchmarkReportWriter.Write(
@@ -278,6 +289,7 @@ public static class BenchmarkCommands
         string mode,
         string model,
         string baseUrl,
+        int timeoutSeconds,
         OllamaHealth health,
         CancellationToken cancellationToken)
     {
@@ -293,7 +305,7 @@ public static class BenchmarkCommands
             {
                 Temperature = manifest.DefaultCandidate.Temperature,
                 ContextTokens = manifest.DefaultCandidate.ContextTokens,
-                TimeoutSeconds = manifest.DefaultCandidate.TimeoutSeconds,
+                TimeoutSeconds = timeoutSeconds,
                 RetryPolicy = manifest.DefaultCandidate.RetryPolicy,
             },
             Environment = environment,

@@ -21,12 +21,16 @@ internal static class BenchmarkFixtures
     public static IReadOnlyList<string> ValidateCommittedInputs() =>
         [.. Manifest.Validate(), .. Dataset.Validate(Manifest)];
 
-    public static NluAnalyzer CreateAnalyzer(INluTransport transport, string model = "test-model") =>
+    public static NluAnalyzer CreateAnalyzer(
+        INluTransport transport,
+        string model = "test-model",
+        TimeProvider? timeProvider = null) =>
         new(
             transport,
             NluRequestBuilder.FromFile(Paths.SchemaFile),
             SchemaValidator,
-            new NluRequestParameters { Model = model, Temperature = 0, ContextTokens = 4096 });
+            new NluRequestParameters { Model = model, Temperature = 0, ContextTokens = 4096 },
+            timeProvider);
 
     public static BenchmarkCase CreateCase(string id, NluOutput expected, string input = "عايز شاشة") => new()
     {
@@ -49,9 +53,9 @@ internal static class BenchmarkFixtures
     {
         var root = Path.Combine(Path.GetTempPath(), $"issue8-benchmark-{Guid.NewGuid():N}");
         var benchmarkRoot = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark");
-        Directory.CreateDirectory(Path.Combine(benchmarkRoot, "data", "v1"));
+        Directory.CreateDirectory(Path.Combine(benchmarkRoot, "Data", "v1"));
         Directory.CreateDirectory(Path.Combine(benchmarkRoot, "schemas"));
-        File.Copy(Paths.DatasetFile, Path.Combine(benchmarkRoot, "data", "v1", "cases.jsonl"));
+        File.Copy(Paths.DatasetFile, Path.Combine(benchmarkRoot, "Data", "v1", "cases.jsonl"));
         File.Copy(Paths.SchemaFile, Path.Combine(benchmarkRoot, "schemas", "nlu-output.schema.json"));
         File.Copy(Paths.ManifestFile, Path.Combine(benchmarkRoot, "manifest.json"));
         return root;
@@ -78,15 +82,17 @@ internal static class BenchmarkFixtures
         bool retried = false,
         long milliseconds = 1000,
         string? failureReason = null,
-        NluTransportTiming? timing = null)
+        NluTransportTiming? timing = null,
+        string? transportFailure = null)
     {
         NluAttempt Attempt(bool correction, long duration) => new()
         {
             Correction = correction,
-            RawContent = output is null ? string.Empty : Serialize(output),
+            RawContent = output is null || transportFailure is not null ? string.Empty : Serialize(output),
             WallClockMilliseconds = duration,
             SchemaValid = schemaValid,
             SchemaErrors = schemaValid ? [] : ["$: required property 'budgetType' is missing"],
+            TransportFailure = transportFailure,
             Output = schemaValid ? output : null,
             Timing = timing,
         };
@@ -102,6 +108,51 @@ internal static class BenchmarkFixtures
             FailureReason = failureReason,
         };
     }
+
+    /// <summary>Executions for every committed case, in file order, using the authored expectations.</summary>
+    public static NluCaseExecution[] AllExpectedExecutions(long milliseconds = 1000) =>
+        [.. Dataset.Cases.Select(testCase => Execution(testCase.Id, testCase.Expected, milliseconds: milliseconds))];
+
+    /// <summary>A measured run that covers the whole dataset exactly once.</summary>
+    public static RunArtifact CompleteRun(string runId, NluCaseExecution[]? executions = null) =>
+        Run(runId, executions ?? AllExpectedExecutions());
+
+    /// <summary>Attaches the stable machine/runtime identity a real run records.</summary>
+    public static RunArtifact WithEnvironment(
+        this RunArtifact run,
+        string osVersion = "26.7",
+        string architecture = "x86_64",
+        string cpu = "Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz",
+        long? memoryBytes = 17179869184,
+        string? ollamaVersion = "0.34.2",
+        string collectedAtUtc = "2026-01-01T00:00:00.0000000+00:00") => run with
+        {
+            Environment = new EnvironmentMetadata
+            {
+                OsVersion = osVersion,
+                Architecture = architecture,
+                Cpu = cpu,
+                MemoryBytes = memoryBytes,
+                OllamaVersion = ollamaVersion,
+                CollectedAtUtc = collectedAtUtc,
+            },
+        };
+
+    public static RunArtifact WithSettings(
+        this RunArtifact run,
+        int? temperature = null,
+        int? contextTokens = null,
+        int? timeoutSeconds = null,
+        string? retryPolicy = null) => run with
+        {
+            Settings = run.Settings with
+            {
+                Temperature = temperature ?? run.Settings.Temperature,
+                ContextTokens = contextTokens ?? run.Settings.ContextTokens,
+                TimeoutSeconds = timeoutSeconds ?? run.Settings.TimeoutSeconds,
+                RetryPolicy = retryPolicy ?? run.Settings.RetryPolicy,
+            },
+        };
 
     public static RunArtifact Run(string runId, params NluCaseExecution[] executions) =>
         RunArtifact.FromExecution(

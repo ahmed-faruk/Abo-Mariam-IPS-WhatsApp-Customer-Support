@@ -19,6 +19,13 @@ public sealed record BenchmarkServices
 
     public Func<BenchmarkDataset, IOllamaGateway> CreateFixtureGateway { get; init; } = _ => new FixtureNluGateway();
 
+    /// <summary>
+    /// Builds the artifact store for one directory. Commands never construct the store directly,
+    /// so a test can observe or redirect run persistence, report loading and no-overwrite
+    /// behaviour without going near Ollama.
+    /// </summary>
+    public Func<string, RunArtifactStore> CreateArtifactStore { get; init; } = directory => new RunArtifactStore(directory);
+
     public EnvironmentMetadataCollector EnvironmentCollector { get; init; } = new();
 
     public Func<DateTimeOffset> Clock { get; init; } = () => DateTimeOffset.UtcNow;
@@ -28,5 +35,6 @@ public sealed record BenchmarkServices
         Paths = RepositoryPaths.Discover(),
         Output = Console.Out,
         Error = Console.Error,
+        CreateArtifactStore = directory => new RunArtifactStore(directory),
     };
 }

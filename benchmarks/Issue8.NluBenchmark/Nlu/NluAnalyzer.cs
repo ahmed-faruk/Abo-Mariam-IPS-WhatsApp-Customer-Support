@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 
 namespace WhatsAppMonitorAssistant.Benchmarks.Nlu;
@@ -26,7 +25,8 @@ public sealed record NluAttempt
 /// <summary>
 /// The outcome of one benchmark case: at most two attempts, because docs/TECHNICAL.md
 /// section 8.3 allows exactly one retry after invalid structured output. A semantic
-/// mismatch never triggers a retry; only an invalid or unparsable reply does.
+/// mismatch never triggers a retry, and neither does a transport failure: only an invalid
+/// or unparsable reply from an actual model response does.
 /// </summary>
 public sealed record NluCaseExecution
 {
@@ -55,17 +55,20 @@ public sealed class NluAnalyzer
     private readonly NluRequestBuilder _requestBuilder;
     private readonly JsonSchemaValidator _schemaValidator;
     private readonly NluRequestParameters _parameters;
+    private readonly TimeProvider _timeProvider;
 
     public NluAnalyzer(
         INluTransport transport,
         NluRequestBuilder requestBuilder,
         JsonSchemaValidator schemaValidator,
-        NluRequestParameters parameters)
+        NluRequestParameters parameters,
+        TimeProvider? timeProvider = null)
     {
         _transport = transport;
         _requestBuilder = requestBuilder;
         _schemaValidator = schemaValidator;
         _parameters = parameters;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<NluCaseExecution> AnalyzeAsync(
@@ -82,6 +85,20 @@ public sealed class NluAnalyzer
                 Attempts = [first],
                 SchemaValid = true,
                 Output = first.Output,
+            };
+        }
+
+        // A transport failure produced no model reply at all, so it is infrastructure evidence.
+        // Retrying it would let an outage disappear behind a later response, and the documented
+        // retry exists only for invalid structured output from an actual reply.
+        if (first.TransportFailure is not null)
+        {
+            return new NluCaseExecution
+            {
+                CaseId = testCase.Id,
+                Attempts = [first],
+                SchemaValid = false,
+                FailureReason = $"transport-failure: {first.TransportFailure}",
             };
         }
 
@@ -109,7 +126,7 @@ public sealed class NluAnalyzer
             IsCorrection = correctionErrors is { Count: > 0 },
         };
 
-        var stopwatch = Stopwatch.StartNew();
+        var startedAt = _timeProvider.GetTimestamp();
         NluTransportResponse response;
 
         try
@@ -118,18 +135,16 @@ public sealed class NluAnalyzer
         }
         catch (OllamaTransportException exception)
         {
-            stopwatch.Stop();
             return new NluAttempt
             {
                 Correction = request.IsCorrection,
                 RawContent = string.Empty,
-                WallClockMilliseconds = stopwatch.ElapsedMilliseconds,
+                WallClockMilliseconds = ElapsedMilliseconds(startedAt),
                 SchemaValid = false,
                 TransportFailure = exception.Message,
             };
         }
 
-        stopwatch.Stop();
         var errors = _schemaValidator.Validate(response.Content);
         NluOutput? output = null;
 
@@ -149,13 +164,16 @@ public sealed class NluAnalyzer
         {
             Correction = request.IsCorrection,
             RawContent = response.Content,
-            WallClockMilliseconds = stopwatch.ElapsedMilliseconds,
+            WallClockMilliseconds = ElapsedMilliseconds(startedAt),
             Timing = response.Timing,
             SchemaValid = errors.Count == 0,
             SchemaErrors = [.. errors],
             Output = errors.Count == 0 ? output : null,
         };
     }
+
+    private long ElapsedMilliseconds(long startedAt) =>
+        (long)_timeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
 
     private static string DescribeFailure(NluAttempt first, NluAttempt retry)
     {

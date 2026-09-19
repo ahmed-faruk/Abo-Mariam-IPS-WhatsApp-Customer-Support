@@ -347,9 +347,11 @@ public static class BenchmarkReportWriter
 
     private static int? SumTokenCounts(RunArtifact run, Func<NluTransportTiming, int?> selector)
     {
-        var timings = Timings(run);
+        var counts = Timings(run).Select(selector).OfType<int>().ToArray();
 
-        return timings.Count == 0 ? null : timings.Sum(selector);
+        // An Ollama response that omits a token count is not a measured zero: report n/a
+        // unless at least one reply actually returned a count.
+        return counts.Length == 0 ? null : counts.Sum();
     }
 
     private static long? SumDurations(RunArtifact run, Func<NluTransportTiming, long?> selector)

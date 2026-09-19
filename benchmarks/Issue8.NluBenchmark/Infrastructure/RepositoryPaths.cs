@@ -10,6 +10,13 @@ public sealed class RepositoryPaths
     public const string SolutionFileName = "WhatsAppMonitorAssistant.slnx";
     public const string BenchmarkRelativePath = "benchmarks/Issue8.NluBenchmark";
 
+    /// <summary>
+    /// The tracked dataset path, spelled exactly as it is committed. The directory is
+    /// <c>Data</c> with a capital D: macOS filesystems are case-insensitive, but the GitHub
+    /// Actions runners are Linux and a lowercase <c>data</c> segment does not exist there.
+    /// </summary>
+    public const string DatasetRelativePath = "Data/v1/cases.jsonl";
+
     private RepositoryPaths(string repositoryRoot)
     {
         RepositoryRoot = repositoryRoot;
@@ -20,7 +27,7 @@ public sealed class RepositoryPaths
 
     public string BenchmarkRoot { get; }
 
-    public string DatasetFile => Path.Combine(BenchmarkRoot, "data", "v1", "cases.jsonl");
+    public string DatasetFile => Path.Combine(BenchmarkRoot, "Data", "v1", "cases.jsonl");
 
     public string SchemaFile => Path.Combine(BenchmarkRoot, "schemas", "nlu-output.schema.json");
 

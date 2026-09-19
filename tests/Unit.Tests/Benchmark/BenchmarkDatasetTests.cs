@@ -229,4 +229,44 @@ public sealed class BenchmarkDatasetTests
 
         Assert.Contains("benchmarks/Issue8.NluBenchmark/Issue8.NluBenchmark.csproj", solution, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Benchmark_input_paths_use_the_exact_case_of_the_tracked_files()
+    {
+        // macOS is case-insensitive, Linux (GitHub Actions) is not: "data/v1/cases.jsonl" loads
+        // fine on the Intel Mac and then fails CI with "Dataset not found".
+        var benchmarkRoot = BenchmarkFixtures.Paths.BenchmarkRoot;
+
+        AssertExactCaseExists(benchmarkRoot, RepositoryPaths.DatasetRelativePath);
+        AssertExactCaseExists(benchmarkRoot, "schemas/nlu-output.schema.json");
+        AssertExactCaseExists(benchmarkRoot, "manifest.json");
+        Assert.Equal(RepositoryPaths.DatasetRelativePath, BenchmarkFixtures.Manifest.Dataset.Path);
+        Assert.EndsWith(
+            Path.Combine("Data", "v1", "cases.jsonl"),
+            BenchmarkFixtures.Paths.DatasetFile,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Walks the path segment by segment using the on-disk spelling, so a wrong-case segment is
+    /// caught even on a case-insensitive filesystem.
+    /// </summary>
+    private static void AssertExactCaseExists(string root, string relativePath)
+    {
+        var directory = root;
+
+        foreach (var segment in relativePath.Split('/'))
+        {
+            var entries = Directory
+                .GetFileSystemEntries(directory)
+                .Select(Path.GetFileName)
+                .ToArray();
+
+            Assert.True(
+                entries.Contains(segment, StringComparer.Ordinal),
+                $"'{segment}' is not the on-disk spelling inside {directory}. Entries: {string.Join(", ", entries)}.");
+
+            directory = Path.Combine(directory, segment);
+        }
+    }
 }

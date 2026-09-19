@@ -90,9 +90,17 @@ public static class CommandLine
             throw new UsageException("The run command requires --run-id <id> so run artifacts are never overwritten by accident.");
         }
 
-        if (invocation.Command == BenchmarkCommandKind.Report && invocation.Runs.Length < 2)
+        if (invocation.Command == BenchmarkCommandKind.Report && invocation.Runs.Length != 2)
         {
-            throw new UsageException("The report command requires --runs <run1,run2> with two live run artifacts.");
+            throw new UsageException(
+                "The report command requires --runs <run1,run2> with exactly two measured passes "
+                + "(Issue #8: two runs after warm-up, no more and no fewer).");
+        }
+
+        if (invocation.Command == BenchmarkCommandKind.Report
+            && invocation.Runs.Distinct(StringComparer.Ordinal).Count() != invocation.Runs.Length)
+        {
+            throw new UsageException("The report command requires two distinct run ids; --runs repeated one.");
         }
 
         return invocation;

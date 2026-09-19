@@ -31,7 +31,7 @@ Source of truth:
 
 | artefact | path |
 | --- | --- |
-| dataset (60 cases) | `data/v1/cases.jsonl` |
+| dataset (60 cases) | `Data/v1/cases.jsonl` |
 | JSON schema | `schemas/nlu-output.schema.json` |
 | manifest (versions, hashes, thresholds) | `manifest.json` |
 | raw run artifacts (gitignored) | `results/<run-id>.json` |
@@ -77,6 +77,18 @@ The live run writes `results/run1.json` and `results/run2.json` (gitignored) and
 command writes `reports/<model-slug>-intel-mac.md` and `.json`, which are committed as the
 Issue #8 evidence. The report command refuses dry-run artifacts so fixture numbers can never
 be presented as measurements.
+
+Evidence integrity rules the commands enforce:
+
+- a measured `results/<run-id>.json` is written with create-new semantics, so an existing run id
+  is rejected instead of overwritten; a second pass needs a new id;
+- a live run in which any case produced no model reply (timeout, connection failure) is an
+  infrastructure failure: the diagnostic artifact is kept, the process exits `3`, and no gate is
+  evaluated, so a partial Ollama outage can never be scored as poor model quality;
+- `report` takes exactly two live run ids, and rejects artifacts whose dataset, schema, prompt or
+  harness versions/hashes are not the current ones, that do not contain all 60 dataset cases
+  exactly once, that were measured with different request settings, or that come from a
+  different machine/runtime baseline (completion and collection timestamps are ignored).
 
 ## Ollama request shape
 

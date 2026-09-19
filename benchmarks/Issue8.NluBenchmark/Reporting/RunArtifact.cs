@@ -145,7 +145,7 @@ public sealed record RunArtifact
         };
 }
 
-public sealed class RunArtifactStore
+public class RunArtifactStore
 {
     private readonly string _directory;
 
@@ -156,13 +156,42 @@ public sealed class RunArtifactStore
 
     public string PathFor(string runId) => Path.Combine(_directory, $"{runId}.json");
 
-    public void Save(RunArtifact artifact)
+    public bool Exists(string runId) => File.Exists(PathFor(runId));
+
+    /// <summary>
+    /// Writes a measured run artifact and refuses to overwrite an existing one: Issue #8 never
+    /// replaces raw evidence, so a second pass needs a new run id.
+    /// </summary>
+    public virtual void Save(RunArtifact artifact)
+    {
+        var path = PathFor(artifact.RunId);
+        Directory.CreateDirectory(_directory);
+
+        try
+        {
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            JsonSerializer.Serialize(stream, artifact, BenchmarkJson.Options);
+        }
+        catch (IOException exception)
+        {
+            throw new BenchmarkDataException(
+                $"Run artifact {path} already exists (or could not be created). Issue #8 never overwrites "
+                + "raw run evidence; choose a new --run-id.",
+                exception);
+        }
+    }
+
+    /// <summary>
+    /// Writes a synthetic dry-run artifact. The dry-run directory is explicitly disposable and
+    /// holds no benchmark evidence, so repeated dry runs may replace it.
+    /// </summary>
+    public virtual void SaveSynthetic(RunArtifact artifact)
     {
         Directory.CreateDirectory(_directory);
         File.WriteAllText(PathFor(artifact.RunId), JsonSerializer.Serialize(artifact, BenchmarkJson.Options));
     }
 
-    public RunArtifact Load(string runId)
+    public virtual RunArtifact Load(string runId)
     {
         var path = PathFor(runId);
 

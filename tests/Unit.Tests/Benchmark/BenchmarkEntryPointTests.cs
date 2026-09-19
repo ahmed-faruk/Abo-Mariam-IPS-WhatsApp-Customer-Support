@@ -218,6 +218,180 @@ public sealed class BenchmarkEntryPointTests
     }
 
     [Fact]
+    public async Task A_partial_ollama_outage_invalidates_the_run_and_keeps_it_out_of_the_report()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var outage = BenchmarkFixtures.CreateServices(root, out _)
+                with
+            {
+                CreateGateway = (_, _, _) => new OutageAfterFirstCaseGateway(),
+            };
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run1"], outage, CancellationToken.None);
+
+            // One case answered, then Ollama went away: that is infrastructure evidence, not a
+            // poor-model quality result, so the run exits 3 instead of being scored.
+            Assert.Equal(ExitCodes.InfrastructureFailure, exitCode);
+
+            var results = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "results");
+            Assert.True(File.Exists(Path.Combine(results, "run1.json")));
+            Assert.Contains("no report was produced", outage.Error.ToString(), StringComparison.Ordinal);
+
+            var healthy = outage with
+            {
+                CreateGateway = (_, _, _) => new ValidOnlyGateway(),
+            };
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run2"], healthy, CancellationToken.None));
+
+            var reportExitCode = await BenchmarkEntryPoint.RunAsync(
+                ["report", "--runs", "run1,run2"],
+                healthy,
+                CancellationToken.None);
+
+            Assert.Equal(ExitCodes.InvalidBenchmarkData, reportExitCode);
+            Assert.Contains("infrastructure-failure evidence", healthy.Error.ToString(), StringComparison.Ordinal);
+
+            var reports = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "reports");
+
+            Assert.Empty(Directory.Exists(reports) ? Directory.GetFiles(reports, "*.md") : []);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_timeout_override_is_used_for_transport_and_persisted_in_the_artifact()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var transportTimeout = 0;
+            var services = BenchmarkFixtures.CreateServices(root, out _)
+                with
+            {
+                CreateGateway = (_, _, timeoutSeconds) =>
+                {
+                    transportTimeout = timeoutSeconds;
+
+                    return new ValidOnlyGateway();
+                },
+            };
+
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(
+                    ["run", "--run-id", "run1", "--timeout-seconds", "45"],
+                    services,
+                    CancellationToken.None));
+            Assert.Equal(45, transportTimeout);
+
+            var results = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "results");
+            var artifact = BenchmarkJson.Deserialize<RunArtifact>(
+                File.ReadAllText(Path.Combine(results, "run1.json")));
+
+            Assert.Equal(45, artifact.Settings.TimeoutSeconds);
+
+            await BenchmarkEntryPoint.RunAsync(
+                ["run", "--run-id", "run2", "--timeout-seconds", "45"],
+                services,
+                CancellationToken.None);
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["report", "--runs", "run1,run2"], services, CancellationToken.None));
+
+            var reports = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "reports");
+            var reportJson = Directory.GetFiles(reports, "*.json").Single();
+            var report = BenchmarkJson.Deserialize<BenchmarkReport>(File.ReadAllText(reportJson));
+
+            Assert.Equal(45, report.Settings.TimeoutSeconds);
+            Assert.Contains("45 s", File.ReadAllText(Path.ChangeExtension(reportJson, ".md")), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task An_existing_run_id_is_rejected_and_the_original_evidence_is_untouched()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var services = BenchmarkFixtures.CreateServices(root, out _)
+                with
+            {
+                CreateGateway = (_, _, _) => new ValidOnlyGateway(),
+            };
+
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run1"], services, CancellationToken.None));
+
+            var artifactPath = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "results", "run1.json");
+            var original = File.ReadAllBytes(artifactPath);
+
+            var exitCode = await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run1"], services, CancellationToken.None);
+
+            Assert.Equal(ExitCodes.InvalidBenchmarkData, exitCode);
+            Assert.Contains("never overwrites", services.Error.ToString(), StringComparison.Ordinal);
+            Assert.Equal(original, File.ReadAllBytes(artifactPath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Commands_persist_and_load_through_the_configured_artifact_store()
+    {
+        var root = BenchmarkFixtures.CreateTempRepository();
+
+        try
+        {
+            var alternative = Path.Combine(root, "alternative-results");
+            var services = BenchmarkFixtures.CreateServices(root, out _)
+                with
+            {
+                CreateGateway = (_, _, _) => new ValidOnlyGateway(),
+                CreateArtifactStore = _ => new RunArtifactStore(alternative),
+            };
+
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run1"], services, CancellationToken.None));
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["run", "--run-id", "run2"], services, CancellationToken.None));
+
+            var defaultResults = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "results");
+
+            Assert.True(File.Exists(Path.Combine(alternative, "run1.json")));
+            Assert.True(File.Exists(Path.Combine(alternative, "run2.json")));
+            Assert.False(Directory.Exists(defaultResults));
+
+            // The report command loads through the same collaborator.
+            Assert.Equal(
+                ExitCodes.Success,
+                await BenchmarkEntryPoint.RunAsync(["report", "--runs", "run1,run2"], services, CancellationToken.None));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Usage_errors_exit_one_and_invalid_benchmark_data_exits_two()
     {
         var root = BenchmarkFixtures.CreateTempRepository();
@@ -230,7 +404,7 @@ public sealed class BenchmarkEntryPointTests
                 ExitCodes.UsageError,
                 await BenchmarkEntryPoint.RunAsync(["nonsense"], services, CancellationToken.None));
 
-            var datasetPath = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "data", "v1", "cases.jsonl");
+            var datasetPath = Path.Combine(root, "benchmarks", "Issue8.NluBenchmark", "Data", "v1", "cases.jsonl");
             File.WriteAllText(datasetPath, File.ReadAllText(datasetPath).Replace(
                 "\"intent\":\"Greeting\"",
                 "\"intent\":\"NotAnIntent\"",
@@ -432,5 +606,23 @@ public sealed class BenchmarkEntryPointTests
 
         public Task<NluTransportResponse> SendAsync(NluTransportRequest request, CancellationToken cancellationToken) =>
             throw new OllamaTransportException("scripted transport failure");
+    }
+
+    /// <summary>A live Ollama that answers the first case and then disappears mid-run.</summary>
+    private sealed class OutageAfterFirstCaseGateway : IOllamaGateway
+    {
+        private int _calls;
+
+        public Task<OllamaHealth> CheckAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new OllamaHealth("test-ollama", ["qwen3.5:2b-q4_K_M"]));
+
+        public Task<NluTransportResponse> SendAsync(NluTransportRequest request, CancellationToken cancellationToken)
+        {
+            _calls++;
+
+            return _calls > 1
+                ? throw new OllamaTransportException("Ollama is not reachable at http://127.0.0.1:11434.")
+                : Task.FromResult(new NluTransportResponse { Content = MinimalValidOutput });
+        }
     }
 }
