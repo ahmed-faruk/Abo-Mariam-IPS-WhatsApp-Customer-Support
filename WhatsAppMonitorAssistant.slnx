@@ -23,4 +23,7 @@
     <Project Path="tests/Performance.Tests/Performance.Tests.csproj" />
     <Project Path="tests/Unit.Tests/Unit.Tests.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Issue8.NluBenchmark/Issue8.NluBenchmark.csproj" />
+  </Folder>
 </Solution>

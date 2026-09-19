@@ -8,6 +8,10 @@ obj/
 TestResults/
 artifacts/
 
+# Issue #8 benchmark output: raw runs are local evidence, final reports are committed
+benchmarks/Issue8.NluBenchmark/results/*
+!benchmarks/Issue8.NluBenchmark/results/.gitkeep
+
 # IDE
 .vs/
 .vscode/

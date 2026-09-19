@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../benchmarks/Issue8.NluBenchmark/Issue8.NluBenchmark.csproj" />
     <ProjectReference Include="../../src/Modules/Catalog/Catalog.csproj" />
     <ProjectReference Include="../../src/Modules/Storefront/Storefront.csproj" />
   </ItemGroup>
