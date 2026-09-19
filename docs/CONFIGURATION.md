@@ -40,3 +40,32 @@ dotnet user-secrets set "Catalog:Search:SoftBudgetTolerance" "<fraction>" --proj
 export Catalog__Search__SizeToleranceInches='<inches>'
 export Catalog__Search__SoftBudgetTolerance='<fraction>'
 ```
+
+## Intelligence AI profile
+
+The Intelligence module reads its AI profile from the `Ai` section. The values below are the frozen
+Controlled Demo Candidate of `docs/TECHNICAL.md` section 8.2 — the local model Issue #9 froze after
+the Issue #8 benchmark — so unlike the tolerances above they are committed as defaults in
+`src/Host.Web/appsettings.json`. They are still validated at startup: a different model, timeout,
+temperature or context size is rejected instead of being run silently, because it would be an
+unmeasured configuration rather than a general-purpose setting.
+
+| Configuration key | Environment variable | Type | Frozen value |
+|---|---|---|---|
+| `Ai:Provider` | `Ai__Provider` | string | `Ollama` |
+| `Ai:BaseUrl` | `Ai__BaseUrl` | absolute URL | `http://127.0.0.1:11434` |
+| `Ai:Model` | `Ai__Model` | string | `qwen3.5:2b-q4_K_M` |
+| `Ai:TimeoutSeconds` | `Ai__TimeoutSeconds` | integer seconds | `20` |
+| `Ai:Temperature` | `Ai__Temperature` | number | `0` |
+| `Ai:ContextTokens` | `Ai__ContextTokens` | integer tokens | `4096` |
+
+The frozen request shape is not configurable: structured JSON schema output, `stream: false`,
+`think: false`, one corrective retry maximum for a reply that is invalid, unparsable or schema-invalid,
+no schema retry for a transport failure, and prompt `nlu-system-prompt-v3`. Local Ollama needs no
+credentials, and it must never be exposed publicly; the demo runs Ollama on `127.0.0.1` only.
+
+```bash
+# optional override for a deliberate, documented change of AI profile
+export Ai__Model='<model-tag>'
+export Ai__TimeoutSeconds='<seconds>'
+```

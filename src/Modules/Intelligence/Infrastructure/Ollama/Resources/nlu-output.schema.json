@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wa-monitor-assistant.local/benchmarks/issue8/nlu-output.schema.json",
+  "title": "Structured NLU output (docs/TECHNICAL.md v3.2 section 8.3)",
+  "description": "The documented conceptual schema, with additionalProperties=false so extra model-authored keys fail validation instead of passing silently. required matches TECHNICAL exactly: conceptually optional fields may be omitted, and an omitted optional field is compared as null. The intent field stays a plain string because TECHNICAL section 8.3 does not constrain it with an enum; intent names are scored against docs/TECHNICAL.md section 9.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "intent": {
+      "type": "string",
+      "description": "Greeting, ProductSearch, ProductDetails, ProductComparison, AvailabilityCheck, PriceCheck, BusinessInfo, HumanHandoff, UnsupportedMedia or OutOfScope."
+    },
+    "brand": {
+      "type": ["string", "null"]
+    },
+    "modelCode": {
+      "type": ["string", "null"]
+    },
+    "sizeInches": {
+      "type": ["number", "null"]
+    },
+    "panel": {
+      "type": ["string", "null"]
+    },
+    "resolution": {
+      "type": ["string", "null"]
+    },
+    "minRefreshRate": {
+      "type": ["integer", "null"]
+    },
+    "requiredPorts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "grades": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "budgetType": {
+      "type": "string",
+      "enum": ["None", "Soft", "Hard", "Range"]
+    },
+    "budgetTarget": {
+      "type": ["number", "null"]
+    },
+    "budgetMin": {
+      "type": ["number", "null"]
+    },
+    "budgetMax": {
+      "type": ["number", "null"]
+    },
+    "useCase": {
+      "type": ["string", "null"]
+    },
+    "reference": {
+      "type": ["string", "null"]
+    }
+  },
+  "required": ["intent", "requiredPorts", "grades", "budgetType"]
+}
