@@ -14,7 +14,7 @@ and it is not pilot/production acceptance:
 | General Issue #8 benchmark | **FAIL** — intent 62.3% vs ≥ 90% |
 | Issue #8 safety gates | schema 100%, hard budget 100% (10/10), median 6.41 s, p95 8.17 s |
 | Gate version | v1 (this file) |
-| Acceptance rule | 100% of scenarios in two consecutive post-warm runs |
+| Acceptance rule | 100% of the 13 required scenarios per run, in two consecutive post-warm runs |
 | Execution owner | Issue #19, after the pre-warm of Issue #18 |
 
 Commercial facts (price, quantity/availability, grade, warranty, exact specs and Storefront business
@@ -33,7 +33,7 @@ All of the following must be true before Run 1 starts:
 4. PostgreSQL is healthy and module migrations are applied;
 5. the demo catalogue is seeded (20–40 representative product/variant rows, docs/PLAN.md section
    16) and the expected result ordering for the demo queries is known;
-6. Storefront working hours are configured as the value used by scenarios 8 and 9;
+6. Storefront working hours are configured as the value used by DEMO-08 and DEMO-09;
 7. for a live gate: Cloudflare Quick Tunnel and the Meta callback are active and webhook
    verification succeeds;
 8. PostgreSQL and Ollama are not publicly exposed;
@@ -43,7 +43,7 @@ The utterances and operator actions of this file are not edited between a failed
 passing attempt. A scenario may not be reworded, reordered or replaced to make the gate pass; a
 necessary change is a new gate version with a new full two-run execution.
 
-## B. User-facing scenarios
+## B. User-facing scenarios (DEMO-01 … DEMO-11)
 
 | id | input | expected |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ necessary change is a new gate version with a new full two-run execution.
 | DEMO-10 Human takeover | `عايز أكلم حد` | `HumanHandoff`; the conversation enters Human mode; automatic AI responses stop |
 | DEMO-11 Admin transcript | operator opens the conversation in Admin | the conversation, its messages and the current mode/status are visible |
 
-## C. Safety preflights
+## C. Safety preflights (DEMO-12 … DEMO-13)
 
 These are safety checks, not staged conversation. They may be executed as preflight before the
 client session and must still be recorded as part of the gate.
@@ -69,25 +69,27 @@ client session and must still be recorded as part of the gate.
 | DEMO-12 Duplicate inbound | replay the same inbound message and message id | durable deduplication; exactly one outbound reply |
 | DEMO-13 Ollama unavailable | simulate an unavailable model through the supported failure/test mechanism of docs/TECHNICAL.md section 30 | no guessed answer; the fixed safe fallback or human option; no fabricated commercial fact; health/failure behavior follows section 30 |
 
-## D. Repeatability and acceptance rule
+## D. Full-gate repeatability and acceptance rule
 
-| id | action | expected |
-| --- | --- | --- |
-| DEMO-14 Full repeatability | after the pre-warm, repeat the complete required gate above | every scenario of DEMO-01 … DEMO-13 passes again in the second consecutive run |
-
-Acceptance is all-or-nothing and is evaluated per run:
+This gate has exactly **13 required executable scenarios per run**: DEMO-01 … DEMO-13 — the 11
+scripted flows of section B and the two safety preflights of section C. Repeatability is the
+acceptance rule below, not a fourteenth scenario.
 
 ```text
-Run 1: every required scenario PASSES
+Run 1: DEMO-01 … DEMO-13 must ALL PASS  (13/13)
 AND
-Run 2: every required scenario PASSES  (consecutive, post-warm)
+Run 2: DEMO-01 … DEMO-13 must ALL PASS again as one complete consecutive
+       post-warm run                    (13/13)
 → Controlled Client Demo Gate: PASS
 
 Anything less than 100% in either run
 → Controlled Client Demo Gate: FAIL
 ```
 
-Failures are never averaged, sampled or re-run selectively within a gate version.
+Failures are never averaged, and a failed scenario is never re-run selectively within a run or
+dropped from the denominator. Frozen inputs are not changed between runs. If execution must restart
+after a failed scenario, the next acceptance attempt is a NEW complete run from DEMO-01 through
+DEMO-13.
 
 ### Latency
 
@@ -117,7 +119,7 @@ Record one row per scenario per run, using the raw values observed — never a r
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | DEMO-01 | `عندك ديل 24؟` | | | | |
 | 1 | … | | | | | |
-| 2 | DEMO-14 | complete gate | | | | |
+| 2 | DEMO-01 … DEMO-13 | complete gate re-run | | | | |
 
 Final summary:
 

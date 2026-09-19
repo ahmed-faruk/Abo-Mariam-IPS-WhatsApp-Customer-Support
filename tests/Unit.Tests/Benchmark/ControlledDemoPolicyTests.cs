@@ -52,7 +52,6 @@ public sealed class ControlledDemoPolicyTests
         ("DEMO-11", "Admin transcript"),
         ("DEMO-12", "Duplicate inbound"),
         ("DEMO-13", "Ollama unavailable"),
-        ("DEMO-14", "Full repeatability"),
     ];
 
     [Fact]
@@ -219,12 +218,29 @@ public sealed class ControlledDemoPolicyTests
     }
 
     [Fact]
+    public void Demo_gate_defines_thirteen_required_scenarios_and_no_counted_fourteenth()
+    {
+        Assert.Equal(13, GateScenarios.Length);
+
+        var text = RepoFile(GateDocument);
+
+        Assert.Contains("13 required executable scenarios per run", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("DEMO-14", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Demo_gate_acceptance_requires_two_consecutive_complete_runs()
     {
         var text = RepoFile(GateDocument);
 
-        Assert.Contains("100% of scenarios in two consecutive post-warm runs", text, StringComparison.Ordinal);
+        Assert.Contains("100% of the 13 required scenarios per run", text, StringComparison.Ordinal);
+        Assert.Contains("Run 1: DEMO-01 … DEMO-13 must ALL PASS", text, StringComparison.Ordinal);
+        Assert.Contains("Run 2: DEMO-01 … DEMO-13 must ALL PASS", text, StringComparison.Ordinal);
+        Assert.Contains("(13/13)", text, StringComparison.Ordinal);
         Assert.Contains("Anything less than 100% in either run", text, StringComparison.Ordinal);
+        Assert.Contains("never averaged", text, StringComparison.Ordinal);
+        Assert.Contains("never re-run selectively", text, StringComparison.Ordinal);
+        Assert.Contains("NEW complete run from DEMO-01 through", text, StringComparison.Ordinal);
         Assert.Contains("Controlled Client Demo Gate: PASS", text, StringComparison.Ordinal);
         Assert.Contains("Controlled Client Demo Gate: FAIL", text, StringComparison.Ordinal);
         Assert.Contains("not pilot/production acceptance", text, StringComparison.Ordinal);
