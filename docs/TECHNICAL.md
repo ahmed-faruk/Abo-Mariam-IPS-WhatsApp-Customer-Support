@@ -474,7 +474,12 @@ public interface IAiNluClient
 
 No Catalog/Conversations code references Ollama/Qwen directly.
 
-## 8.2 Demo candidate
+## 8.2 Controlled Demo Candidate (frozen)
+
+The frozen local client-demo configuration is the **Controlled Demo Candidate** defined by
+docs/PLAN.md section 13.3. It is deliberately not a general benchmark pass — Issue #8 measured
+62.3% general intent accuracy against the ≥ 90% threshold, a documented general benchmark FAIL —
+and it is not a pilot/production candidate.
 
 ```text
 qwen3.5:2b-q4_K_M
@@ -496,6 +501,22 @@ Use:
   }
 }
 ```
+
+The frozen candidate also fixes the request shape and lifecycle:
+
+```text
+stream: false
+think: false
+structured output: the committed JSON schema of section 8.3
+retry: one corrective retry maximum, only when an actual model reply is invalid, unparsable or
+       schema-invalid; a transport timeout or connectivity failure is never schema-retried and
+       stays visible as an infrastructure failure
+pre-warm: required before the client demo (section 29)
+```
+
+This section is the single place the demo AI configuration is written down. The Intelligence
+adapter of Issue #10 consumes exactly these values and owns adding the `Ai` section to the host
+configuration; alternative values are a new decision, not a default.
 
 `ContextTokens` is an application-level cap/target, not a claim that the model cannot support more.
 
@@ -1104,6 +1125,10 @@ Required:
 - warm NLU p95 target ≤12s;
 - zero fact fabrication path.
 
+The AI configuration measured by these gates is the Controlled Demo Candidate of section 8.2. Its
+Issue #8 general benchmark failure stays documented, and passing these gates is client-demo
+acceptance, not pilot/production acceptance.
+
 ## 25.2 Future pilot gate
 
 After VPS provisioning:
@@ -1217,6 +1242,33 @@ Qwen3.5 2B Q4_K_M
     └─ quality fail / latency headroom → optionally test Qwen3.5 4B
 ```
 
+The tree above stays the general benchmark record. The Issue #8 measurement on the physical Intel
+Mac produced:
+
+```text
+Qwen3.5 2B Q4_K_M  → quality FAIL (intent 62.3% vs >= 90%), latency PASS
+                     (median 6.41 s, p95 8.17 s; schema 100%, hard budget 100% (10/10))
+Qwen3.5 4B Q4_K_M  → warm-up blocked; no measured metrics
+Qwen3 1.7B         → not tested; its branch (quality pass / latency fail) did not occur
+```
+
+**The general benchmark stays FAIL for every measured candidate.** The controlled-demo exception is
+separate from the tree above:
+
+```text
+general quality fail
+  + schema reliability pass (>= 98% after one retry)
+  + hard-budget safety pass (100%)
+  + acceptable local warm latency
+  + no suitable stronger local candidate
+→ the measured 2B configuration may be frozen as a Controlled Demo Candidate (section 8.2);
+  the client presentation still requires docs/demo/DEMO-CRITICAL-GATE-v1.md to pass 100% of its
+  scenarios in two consecutive post-warm runs (section 29)
+```
+
+This exception never re-labels the general benchmark as a pass and never promotes the configuration
+to pilot/production; docs/PLAN.md section 19 keeps the ≥ 90% general gate for that step.
+
 No model is accepted because it is newer/larger.
 
 ---
@@ -1247,6 +1299,11 @@ Do this before the meeting:
 19. Do not run Testcontainers/Playwright/load tests during presentation
 20. Start client demo
 ```
+
+Ownership of the AI steps above: Issue #18 executes the two-request pre-warm, and Issue #19
+executes the complete `docs/demo/DEMO-CRITICAL-GATE-v1.md` twice consecutively and records the
+client-demo acceptance evidence. The 60-case general benchmark is never run during the client
+presentation.
 
 ---
 
@@ -1279,7 +1336,9 @@ Ready when:
 - Docker/PostgreSQL works;
 - module migrations apply from zero;
 - unit/architecture/integration/contract/E2E/Playwright CI gates pass;
-- selected model passes Mac demo benchmark;
+- the Controlled Demo Candidate configuration of section 8.2 is frozen;
+- `docs/demo/DEMO-CRITICAL-GATE-v1.md` passes 100% of its scenarios in two consecutive post-warm
+  executions;
 - webhook HTTPS verification succeeds;
 - live WhatsApp inbound/outbound succeeds;
 - duplicate inbound gives one response;
@@ -1291,6 +1350,10 @@ Ready when:
 - Ollama/DB failure does not fabricate facts;
 - PostgreSQL/Ollama are private;
 - two consecutive pre-demo smoke runs pass.
+
+This definition of done is client-demo acceptance only. The frozen configuration is not a
+pilot/production candidate, and the Issue #8 general benchmark failure stays documented next to
+the demo evidence.
 
 ---
 
@@ -1306,10 +1369,18 @@ After client accepts the proof-of-concept:
 6. restore/import real catalogue;
 7. configure stable HTTPS;
 8. update Meta callback;
-9. benchmark VPS AI latency;
+9. benchmark the intended AI model on that host and confirm the general gate of docs/PLAN.md
+   section 13.3 — general intent accuracy ≥ 90%, hard-budget classification 100%, structured
+   schema success ≥ 98% after one retry — plus latency targets revalidated for that host;
 10. run pilot load gate;
 11. configure backup/monitoring;
 12. run live smoke.
+
+Step 9 is the pilot/production AI gate: until the intended model passes it on that host, the
+environment stays a demo. A stronger model or a different provider may be chosen for that step; the
+AI provider/model stays replaceable behind the adapter and its configuration, and business modules
+and commercial-fact ownership do not change. No exact future VPS, model or vendor is prescribed
+here.
 
 Architecture/module/business code should not change for this move.
 
