@@ -180,3 +180,20 @@ harness never selects a model on its own.
 comparison and scoring, retry semantics, percentile math, gate and decision logic, report
 rendering, request building and CLI/exit-code behaviour. Those tests use fixtures only: no
 Ollama, no network, no PostgreSQL.
+
+## Recorded Issue #8 outcome
+
+The final evidence lives in `reports/qwen3.5-2b-q4_k_m-intel-mac.{md,json}` (measured sections plus
+the curated `Issue #8 final outcome` block) and stays auditable from `results/v3-run1.json`,
+`results/v3-run2.json`:
+
+| candidate | outcome |
+| --- | --- |
+| qwen3.5:2b-q4_K_M (prompt v3) | schema 100%, hard budget 100% (10/10), median 6.41 s, p95 8.17 s — all pass; intent accuracy 62.3% fails the >= 90% gate |
+| qwen3.5:4b-q4_K_M | warm-up blocked: `Ollama timed out on every attempt after 40.04 s` on the 20 s request timeout, so no measured run was started and no metrics exist |
+| qwen3:1.7b | not tested: PLAN assigns this fallback to the quality-pass / latency-fail branch, which did not occur |
+
+**No tested candidate satisfies all PLAN v3.2 acceptance gates on the physical Intel Mac baseline.**
+Issue #8 deliberately does not freeze a model; Issue #9 owns model freezing and must resolve this
+documented blocker. The raw run artifacts stay gitignored, and this ticket's runs are not rerun by
+the harness commands above unless a human starts them.
