@@ -447,6 +447,47 @@ public sealed class NluReplyValidatorTests
         Assert.All(validation.Problems, problem => Assert.DoesNotContain(money, problem, StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("hostile\nname\u0007", "$.hostile?name?")]
+    [InlineData("", "$.")]
+    public void A_hostile_unknown_property_name_is_sanitized_in_its_diagnostic(
+        string field,
+        string expectedPathPrefix)
+    {
+        var reply = Reply();
+        reply[field] = "anything";
+
+        var validation = NluReplyValidator.Validate(Json(reply));
+        var problem = Assert.Single(
+            validation.Problems,
+            candidate => candidate.Contains("is not a field of the documented NLU contract", StringComparison.Ordinal));
+
+        Assert.StartsWith(expectedPathPrefix, problem, StringComparison.Ordinal);
+        Assert.True(problem.Length <= NluDiagnostics.MaxProblemLength);
+        Assert.DoesNotContain('\n', problem);
+        Assert.DoesNotContain('\r', problem);
+        Assert.DoesNotContain('\u0007', problem);
+    }
+
+    [Fact]
+    public void An_absurdly_long_unknown_property_name_produces_one_bounded_diagnostic()
+    {
+        var reply = Reply();
+        reply[new string('x', 100_000)] = "anything";
+
+        var validation = NluReplyValidator.Validate(Json(reply));
+
+        Assert.False(validation.IsValid);
+        Assert.All(
+            validation.Problems,
+            problem => Assert.True(problem.Length <= NluDiagnostics.MaxProblemLength));
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.Contains(
+                "$." + new string('x', NluDiagnostics.MaxIdentifierLength) + "...",
+                StringComparison.Ordinal));
+    }
+
     private static JsonObject Reply() => new()
     {
         ["intent"] = "ProductSearch",

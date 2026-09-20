@@ -123,8 +123,8 @@ public static class NluReplyValidator
             if (!NluContract.Fields.Contains(property.Name, StringComparer.Ordinal))
             {
                 problems.Add(
-                    $"$.{property.Name}: is not a field of the documented NLU contract, so it cannot "
-                    + "become structured output");
+                    $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: is not a field of the documented "
+                    + "NLU contract, so it cannot become structured output");
             }
         }
     }

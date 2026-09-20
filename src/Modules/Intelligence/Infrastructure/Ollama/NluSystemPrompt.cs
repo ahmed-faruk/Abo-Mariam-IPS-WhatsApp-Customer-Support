@@ -1,4 +1,6 @@
+using System.Text;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
+using WhatsAppMonitorAssistant.Modules.Intelligence.Domain;
 
 namespace WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure.Ollama;
 
@@ -109,11 +111,43 @@ public static class NluSystemPrompt
         - Never invent, round or adjust a budget number the customer did not state.
         """;
 
-    /// <summary>The single corrective follow-up used when the first reply is not schema-valid.</summary>
-    public static string BuildCorrection(IReadOnlyList<string> schemaErrors) =>
-        "Your previous reply did not match the required JSON schema. "
-        + "Reply again with a single JSON object that satisfies the schema exactly. "
-        + "Problems: "
-        + string.Join("; ", schemaErrors)
-        + ".";
+    /// <summary>
+    /// The single corrective follow-up used when the first reply is not schema-valid. The diagnostics are
+    /// application-generated and bounded by <see cref="NluDiagnostics"/>: a reply names its own keys, so
+    /// an undocumented key must never become an unbounded or multi-line instruction here.
+    /// </summary>
+    public static string BuildCorrection(IReadOnlyList<string> schemaErrors)
+    {
+        ArgumentNullException.ThrowIfNull(schemaErrors);
+
+        var listed = new List<string>(NluDiagnostics.MaxCorrectionProblems);
+        var omitted = false;
+
+        foreach (var error in schemaErrors)
+        {
+            if (listed.Count == NluDiagnostics.MaxCorrectionProblems)
+            {
+                omitted = true;
+
+                break;
+            }
+
+            listed.Add(NluDiagnostics.ClampProblem(error));
+        }
+
+        var message = new StringBuilder("Your previous reply did not match the required JSON schema. ")
+            .Append("Reply again with a single JSON object that satisfies the schema exactly. ")
+            .Append("Problems: ")
+            .Append(listed.Count == 0 ? "none reported" : string.Join("; ", listed))
+            .Append('.');
+
+        if (omitted)
+        {
+            message.Append(' ').Append(NluDiagnostics.OmittedProblemsSummary);
+        }
+
+        return message.Length <= NluDiagnostics.MaxCorrectionLength
+            ? message.ToString()
+            : message.ToString(0, NluDiagnostics.MaxCorrectionLength);
+    }
 }

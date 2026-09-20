@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 
 /// <summary>
@@ -21,11 +23,39 @@ public sealed record NluConversationContext
     /// <summary>The largest length of one candidate label or previous reference.</summary>
     public const int MaxLabelLength = 120;
 
+    private readonly ImmutableArray<string> _previousCandidateLabels = [];
+
     /// <summary>The context of a first turn: no previous candidates and no previous reference.</summary>
     public static NluConversationContext Empty { get; } = new();
 
-    /// <summary>The labels of the candidates the previous turn showed, in the order it showed them.</summary>
-    public IReadOnlyList<string> PreviousCandidateLabels { get; init; } = [];
+    /// <summary>
+    /// The labels of the candidates the previous turn showed, in the order it showed them. The initializer
+    /// takes an immutable snapshot of the caller's collection, so mutating that collection afterwards —
+    /// or casting the property back to a mutable list — cannot widen the context past its bounds.
+    /// </summary>
+    /// <exception cref="ArgumentException">The caller passed null instead of an empty collection.</exception>
+    public IReadOnlyList<string> PreviousCandidateLabels
+    {
+        get => _previousCandidateLabels;
+        init
+        {
+            if (value is null)
+            {
+                throw new ArgumentException(
+                    $"{nameof(PreviousCandidateLabels)} must be an empty list rather than null.",
+                    nameof(PreviousCandidateLabels));
+            }
+
+            var snapshot = new string[value.Count];
+
+            for (var index = 0; index < snapshot.Length; index++)
+            {
+                snapshot[index] = value[index];
+            }
+
+            _previousCandidateLabels = ImmutableArray.Create(snapshot);
+        }
+    }
 
     /// <summary>The reference the previous turn resolved, when it resolved one.</summary>
     public string? PreviousReference { get; init; }
@@ -41,13 +71,6 @@ public sealed record NluConversationContext
     /// <exception cref="ArgumentException">The context exceeds <see cref="MaxCandidateLabels"/> or a label exceeds <see cref="MaxLabelLength"/>.</exception>
     public void EnsureWithinBounds()
     {
-        if (PreviousCandidateLabels is null)
-        {
-            throw new ArgumentException(
-                $"{nameof(PreviousCandidateLabels)} must be an empty list rather than null.",
-                nameof(PreviousCandidateLabels));
-        }
-
         if (PreviousCandidateLabels.Count > MaxCandidateLabels)
         {
             throw new ArgumentException(

@@ -25,9 +25,14 @@ public sealed record NluReplyValidation
     };
 
     /// <summary>A reply that does not satisfy the contract, with the reasons.</summary>
-    public static NluReplyValidation Invalid(IReadOnlyList<string> problems) => new()
+    public static NluReplyValidation Invalid(IReadOnlyList<string> problems)
     {
-        IsValid = false,
-        Problems = [.. problems],
-    };
+        ArgumentNullException.ThrowIfNull(problems);
+
+        return new NluReplyValidation
+        {
+            IsValid = false,
+            Problems = [.. problems.Select(NluDiagnostics.ClampProblem)],
+        };
+    }
 }
