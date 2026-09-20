@@ -53,6 +53,7 @@ public static class NluReplyValidator
 
             var problems = new List<string>();
 
+            CollectDuplicateFields(root, problems);
             CollectUndocumentedFields(root, problems);
             CollectMissingRequiredFields(root, problems);
 
@@ -125,6 +126,26 @@ public static class NluReplyValidator
                 problems.Add(
                     $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: is not a field of the documented "
                     + "NLU contract, so it cannot become structured output");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A JSON object whose text repeats a property name is structurally ambiguous: a reader that keeps
+    /// the first value and one that keeps the last disagree about the same reply, so no duplicate name
+    /// may become a successful interpretation — not even when both values happen to be identical.
+    /// </summary>
+    private static void CollectDuplicateFields(JsonElement root, List<string> problems)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var property in root.EnumerateObject())
+        {
+            if (!seen.Add(property.Name))
+            {
+                problems.Add(
+                    $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: appears more than once in the "
+                    + "reply, so the reply is ambiguous and cannot be used");
             }
         }
     }

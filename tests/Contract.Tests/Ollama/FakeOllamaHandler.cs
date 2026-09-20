@@ -35,6 +35,9 @@ internal sealed class FakeOllamaHandler : HttpMessageHandler
     public FakeOllamaHandler ThenFailure(Exception exception) =>
         Then(_ => Task.FromException<HttpResponseMessage>(exception));
 
+    public FakeOllamaHandler ThenResponse(Func<CancellationToken, HttpResponseMessage> response) =>
+        Then(cancellationToken => Task.FromResult(response(cancellationToken)));
+
     public FakeOllamaHandler ThenHang() =>
         Then(async cancellationToken =>
         {

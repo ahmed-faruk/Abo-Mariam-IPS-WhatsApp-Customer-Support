@@ -20,6 +20,12 @@ public static class NluDiagnostics
     /// <summary>The most problems the corrective message lists before it summarizes the rest.</summary>
     public const int MaxCorrectionProblems = 8;
 
+    /// <summary>
+    /// The most problems any validation result retains. A reply names its own keys, so an undocumented
+    /// reply could otherwise allocate one retained diagnostic per hostile key.
+    /// </summary>
+    public const int MaxRetainedProblems = 16;
+
     /// <summary>The longest corrective message, in characters, including the fixed omission summary.</summary>
     public const int MaxCorrectionLength = 2048;
 
@@ -83,6 +89,31 @@ public static class NluDiagnostics
         }
 
         return string.Concat(flattened.AsSpan(0, end), "...");
+    }
+
+    /// <summary>
+    /// Bounds a problem list: at most <see cref="MaxRetainedProblems"/> clamped diagnostics plus one
+    /// fixed application-owned summary when anything was left out.
+    /// </summary>
+    public static IReadOnlyList<string> ClampProblems(IReadOnlyList<string> problems)
+    {
+        ArgumentNullException.ThrowIfNull(problems);
+
+        if (problems.Count <= MaxRetainedProblems)
+        {
+            return [.. problems.Select(ClampProblem)];
+        }
+
+        var clamped = new List<string>(MaxRetainedProblems + 1);
+
+        for (var index = 0; index < MaxRetainedProblems; index++)
+        {
+            clamped.Add(ClampProblem(problems[index]));
+        }
+
+        clamped.Add(OmittedProblemsSummary);
+
+        return clamped;
     }
 
     private static bool IsSafeIdentifierCharacter(char character) =>

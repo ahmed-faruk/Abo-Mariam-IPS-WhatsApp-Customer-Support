@@ -21,7 +21,30 @@ public sealed class NluDiagnosticsTests
         Assert.Equal(200, NluDiagnostics.MaxProblemLength);
         Assert.Equal(48, NluDiagnostics.MaxIdentifierLength);
         Assert.Equal(8, NluDiagnostics.MaxCorrectionProblems);
+        Assert.Equal(16, NluDiagnostics.MaxRetainedProblems);
         Assert.Equal(2048, NluDiagnostics.MaxCorrectionLength);
+    }
+
+    [Fact]
+    public void A_problem_list_is_bounded_with_one_fixed_omission_summary()
+    {
+        var problems = Enumerable.Range(0, 500).Select(index => $"$.field{index}: is invalid").ToArray();
+
+        var clamped = NluDiagnostics.ClampProblems(problems);
+
+        Assert.Equal(NluDiagnostics.MaxRetainedProblems + 1, clamped.Count);
+        Assert.Equal("$.field0: is invalid", clamped[0]);
+        Assert.Equal("$.field15: is invalid", clamped[NluDiagnostics.MaxRetainedProblems - 1]);
+        Assert.Equal(NluDiagnostics.OmittedProblemsSummary, clamped[^1]);
+        Assert.Single(clamped, problem => problem == NluDiagnostics.OmittedProblemsSummary);
+    }
+
+    [Fact]
+    public void A_short_problem_list_is_clamped_without_an_omission_summary()
+    {
+        var clamped = NluDiagnostics.ClampProblems(["$.intent: is invalid"]);
+
+        Assert.Equal(["$.intent: is invalid"], clamped);
     }
 
     [Theory]

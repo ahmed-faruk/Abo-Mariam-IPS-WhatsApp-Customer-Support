@@ -23,11 +23,13 @@ public sealed class OllamaAiOptionsValidator : IValidateOptions<OllamaAiOptions>
                 + $"docs/TECHNICAL.md section 8.2, but was '{options.Provider}'.");
         }
 
-        if (!IsAbsoluteHttpUrl(options.BaseUrl))
+        if (!IsFrozenBaseUrl(options.BaseUrl))
         {
             failures.Add(
-                $"The AI setting '{nameof(OllamaAiOptions.BaseUrl)}' must be an absolute http or https "
-                + $"URL such as '{OllamaFrozenProfile.BaseUrl}', but was '{options.BaseUrl}'.");
+                $"The AI setting '{nameof(OllamaAiOptions.BaseUrl)}' must be the frozen Controlled Demo "
+                + $"Candidate endpoint '{OllamaFrozenProfile.BaseUrl}', but was '{options.BaseUrl}'. "
+                + "Changing the scheme, host, port or path of the measured runtime is a new documented "
+                + "decision, not a configuration value.");
         }
 
         if (!string.Equals(options.Model, OllamaFrozenProfile.Model, StringComparison.Ordinal))
@@ -67,7 +69,21 @@ public sealed class OllamaAiOptionsValidator : IValidateOptions<OllamaAiOptions>
             : ValidateOptionsResult.Fail(failures);
     }
 
-    private static bool IsAbsoluteHttpUrl(string candidate) =>
+    /// <summary>
+    /// Accepts exactly the measured endpoint of docs/TECHNICAL.md section 8.2. The comparison is the
+    /// semantic comparison .NET applies to URIs, so an uppercase host or a trailing slash is harmless,
+    /// while a different scheme, host, port or path is a different endpoint and is rejected.
+    /// </summary>
+    private static bool IsFrozenBaseUrl(string candidate) =>
         Uri.TryCreate(candidate, UriKind.Absolute, out var uri)
-        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+        && Uri.TryCreate(OllamaFrozenProfile.BaseUrl, UriKind.Absolute, out var frozen)
+        && Uri.Compare(
+            uri,
+            frozen,
+            UriComponents.SchemeAndServer
+                | UriComponents.Path
+                | UriComponents.Query
+                | UriComponents.Fragment,
+            UriFormat.SafeUnescaped,
+            StringComparison.OrdinalIgnoreCase) == 0;
 }

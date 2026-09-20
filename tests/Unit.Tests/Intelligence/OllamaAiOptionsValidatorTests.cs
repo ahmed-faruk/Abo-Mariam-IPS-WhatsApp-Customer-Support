@@ -53,13 +53,31 @@ public sealed class OllamaAiOptionsValidatorTests
         AssertRejected(options, nameof(OllamaAiOptions.BaseUrl));
     }
 
-    [Fact]
-    public void An_https_base_url_is_accepted()
+    [Theory]
+    [InlineData("http://127.0.0.1:11434/")]
+    [InlineData("HTTP://127.0.0.1:11434")]
+    public void The_frozen_endpoint_is_accepted_with_harmless_uri_normalisation(string baseUrl)
     {
         var options = Frozen();
-        options.BaseUrl = "https://127.0.0.1:11434";
+        options.BaseUrl = baseUrl;
 
         Assert.True(_validator.Validate(null, options).Succeeded);
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1:11434")]
+    [InlineData("http://localhost:11434")]
+    [InlineData("http://127.0.0.1:11435")]
+    [InlineData("http://example.com:11434")]
+    [InlineData("http://127.0.0.1:11434/api")]
+    [InlineData("http://127.0.0.1:11434?x=1")]
+    [InlineData("http://127.0.0.1:11434#fragment")]
+    public void A_base_url_that_is_not_the_frozen_endpoint_is_rejected(string baseUrl)
+    {
+        var options = Frozen();
+        options.BaseUrl = baseUrl;
+
+        AssertRejected(options, nameof(OllamaAiOptions.BaseUrl));
     }
 
     [Theory]

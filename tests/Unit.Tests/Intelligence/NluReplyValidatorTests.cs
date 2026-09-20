@@ -488,6 +488,104 @@ public sealed class NluReplyValidatorTests
                 StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void A_duplicated_required_property_is_rejected_even_when_both_values_match()
+    {
+        var content = Json(Reply()).Replace(
+            "\"intent\":\"ProductSearch\"",
+            "\"intent\":\"ProductSearch\",\"intent\":\"ProductSearch\"",
+            StringComparison.Ordinal);
+
+        var validation = NluReplyValidator.Validate(content);
+
+        Assert.False(validation.IsValid);
+        Assert.Null(validation.Interpretation);
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.Contains("$.intent", StringComparison.Ordinal)
+                && problem.Contains("appears more than once", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_duplicated_required_property_with_contradictory_values_is_rejected()
+    {
+        var content = Json(Reply()).Replace(
+            "\"intent\":\"ProductSearch\"",
+            "\"intent\":\"ProductSearch\",\"intent\":\"PriceCheck\"",
+            StringComparison.Ordinal);
+
+        var validation = NluReplyValidator.Validate(content);
+
+        Assert.False(validation.IsValid);
+        Assert.Null(validation.Interpretation);
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.Contains("$.intent", StringComparison.Ordinal)
+                && problem.Contains("appears more than once", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_duplicated_optional_property_is_rejected_even_when_both_values_match()
+    {
+        var content = Json(Reply()).Replace(
+            "\"brand\":null",
+            "\"brand\":\"Dell\",\"brand\":\"Dell\"",
+            StringComparison.Ordinal);
+
+        var validation = NluReplyValidator.Validate(content);
+
+        Assert.False(validation.IsValid);
+        Assert.Null(validation.Interpretation);
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.Contains("$.brand", StringComparison.Ordinal)
+                && problem.Contains("appears more than once", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_duplicated_optional_property_with_contradictory_values_is_rejected()
+    {
+        var content = Json(Reply()).Replace(
+            "\"budgetTarget\":null",
+            "\"budgetTarget\":2500,\"budgetTarget\":3000",
+            StringComparison.Ordinal);
+
+        var validation = NluReplyValidator.Validate(content);
+
+        Assert.False(validation.IsValid);
+        Assert.Null(validation.Interpretation);
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.Contains("$.budgetTarget", StringComparison.Ordinal)
+                && problem.Contains("appears more than once", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Retained_problems_stay_bounded_for_a_reply_full_of_unknown_fields()
+    {
+        var reply = Reply();
+
+        for (var index = 0; index < 200; index++)
+        {
+            reply[$"hostile{index}"] = "anything";
+        }
+
+        var validation = NluReplyValidator.Validate(Json(reply));
+
+        Assert.False(validation.IsValid);
+        Assert.All(validation.Problems, problem => Assert.True(problem.Length <= NluDiagnostics.MaxProblemLength));
+        Assert.Equal(NluDiagnostics.MaxRetainedProblems + 1, validation.Problems.Count);
+        Assert.Equal(
+            NluDiagnostics.OmittedProblemsSummary,
+            validation.Problems[^1]);
+        Assert.Single(
+            validation.Problems,
+            problem => string.Equals(
+                problem,
+                NluDiagnostics.OmittedProblemsSummary,
+                StringComparison.Ordinal));
+    }
+
     private static JsonObject Reply() => new()
     {
         ["intent"] = "ProductSearch",

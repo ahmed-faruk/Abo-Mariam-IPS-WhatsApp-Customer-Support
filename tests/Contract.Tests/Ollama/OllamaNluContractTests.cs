@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Domain;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure;
@@ -225,6 +226,100 @@ public sealed class OllamaNluContractTests
     }
 
     [Fact]
+    public async Task A_duplicated_root_property_is_corrected_exactly_once_and_can_succeed()
+    {
+        var (client, handler) = CreateClient();
+        handler
+            .ThenJson("""{"intent": "ProductSearch", "intent": "ProductSearch", "requiredPorts": [], "grades": [], "budgetType": "None"}""")
+            .ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.Success, result.Status);
+        Assert.Equal(2, handler.Attempts);
+
+        using var body = JsonDocument.Parse(handler.Requests[1].Body!);
+        var correction = body.RootElement.GetProperty("messages")[2].GetProperty("content").GetString() ?? string.Empty;
+
+        Assert.Contains("$.intent", correction, StringComparison.Ordinal);
+        Assert.Contains("appears more than once", correction, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Two_duplicated_root_property_replies_safe_fail_without_a_third_request()
+    {
+        var (client, handler) = CreateClient();
+        const string Duplicated =
+            """{"intent": "ProductSearch", "intent": "PriceCheck", "requiredPorts": [], "grades": [], "budgetType": "None"}""";
+
+        handler.ThenJson(Duplicated).ThenJson(Duplicated);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.InvalidModelOutput, result.Status);
+        Assert.True(result.RequiresClarification);
+        Assert.Null(result.Interpretation);
+        Assert.Equal(2, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task An_oversized_ollama_envelope_maps_to_ai_unavailable_without_a_schema_retry()
+    {
+        var (client, handler) = CreateClient();
+        var oversized = FakeOllamaHandler.ChatEnvelope(new string('x', OllamaChatTransport.MaxResponseBytes + 1024));
+
+        handler.ThenRaw(oversized).ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.False(result.RequiresClarification);
+        Assert.Equal(1, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task An_oversized_response_body_maps_to_ai_unavailable_without_a_schema_retry()
+    {
+        var (client, handler) = CreateClient();
+
+        handler
+            .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new EndlessStream()),
+            })
+            .ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.Equal(1, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task An_oversized_content_length_header_is_rejected_before_the_body_is_buffered()
+    {
+        var (client, handler) = CreateClient();
+
+        handler
+            .ThenResponse(_ =>
+            {
+                // The announced length alone proves the envelope cannot be a structured NLU reply, so
+                // the adapter never has to read the body to reject it.
+                var content = new ByteArrayContent([1, 2, 3]);
+                content.Headers.ContentLength = OllamaChatTransport.MaxResponseBytes + 1;
+
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+            })
+            .ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.False(result.RequiresClarification);
+        Assert.Equal(1, handler.Attempts);
+    }
+
+    [Fact]
     public async Task A_connection_failure_maps_to_ai_unavailable_without_a_schema_retry()
     {
         var (client, handler) = CreateClient();
@@ -284,7 +379,7 @@ public sealed class OllamaNluContractTests
         };
 
         var client = new OllamaAiNluClient(
-            new OllamaChatTransport(httpClient, options),
+            new OllamaChatTransport(httpClient, options, NullLogger<OllamaChatTransport>.Instance),
             new OllamaChatRequestBuilder(options, NluOutputSchema.Load()));
 
         handler.ThenHang().ThenJson(ValidReply);
@@ -348,5 +443,50 @@ public sealed class OllamaNluContractTests
         var provider = services.BuildServiceProvider();
 
         return (provider.GetRequiredService<IAiNluClient>(), handler);
+    }
+
+    /// <summary>A body with no end, so only the adapter's own response-size bound can stop the read.</summary>
+    private sealed class EndlessStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            buffer.AsSpan(offset, count).Fill((byte)'x');
+
+            return count;
+        }
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            buffer.Span.Fill((byte)'x');
+
+            return ValueTask.FromResult(buffer.Length);
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

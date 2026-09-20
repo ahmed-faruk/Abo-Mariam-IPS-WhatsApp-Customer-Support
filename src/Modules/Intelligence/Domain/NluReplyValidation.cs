@@ -32,7 +32,7 @@ public sealed record NluReplyValidation
         return new NluReplyValidation
         {
             IsValid = false,
-            Problems = [.. problems.Select(NluDiagnostics.ClampProblem)],
+            Problems = NluDiagnostics.ClampProblems(problems),
         };
     }
 }
