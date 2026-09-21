@@ -4,9 +4,10 @@ using WhatsAppMonitorAssistant.Modules.Storefront.Contracts;
 namespace WhatsAppMonitorAssistant.Unit.Tests.Conversations;
 
 /// <summary>
-/// A business-info question resolves to an approved Storefront key through an explicit deterministic
-/// allowlist over the original customer text. An unmatched question is a clarification, never a guess
-/// at which stored answer the customer meant.
+/// A business-info question resolves to the approved Storefront keys it names through an explicit
+/// deterministic allowlist over the original customer text. An unmatched question is a clarification,
+/// and a question that names two different concepts is ambiguous rather than silently answered with the
+/// first one, so the customer is asked which answer they meant.
 /// </summary>
 public sealed class BusinessInfoScopeTests
 {
@@ -26,7 +27,7 @@ public sealed class BusinessInfoScopeTests
     [InlineData("الاسترجاع", BusinessInfoKeyNames.ReturnExchangePolicy)]
     public void An_allowlisted_question_resolves_its_canonical_storefront_key(string text, string expectedKey)
     {
-        var resolved = BusinessInfoScope.ResolveKey(text);
+        var resolved = Assert.Single(BusinessInfoScope.ResolveKeys(text));
 
         Assert.Equal(expectedKey, resolved);
         Assert.Contains(resolved, BusinessInfoKeyNames.All);
@@ -40,6 +41,30 @@ public sealed class BusinessInfoScopeTests
     [InlineData("tell me about the monitors")]
     public void A_question_outside_the_allowlist_resolves_to_nothing(string? text)
     {
-        Assert.Null(BusinessInfoScope.ResolveKey(text));
+        Assert.Empty(BusinessInfoScope.ResolveKeys(text));
+    }
+
+    [Fact]
+    public void A_question_naming_two_concepts_resolves_both_instead_of_picking_the_first()
+    {
+        Assert.Equal(
+            [BusinessInfoKeyNames.WorkingHours, BusinessInfoKeyNames.Address],
+            BusinessInfoScope.ResolveKeys("مواعيدكم إيه والعنوان فين؟"));
+    }
+
+    [Fact]
+    public void Repeated_aliases_of_one_concept_stay_one_key()
+    {
+        Assert.Equal(
+            [BusinessInfoKeyNames.WorkingHours],
+            BusinessInfoScope.ResolveKeys("مواعيد الشغل وكمان معاد الفتح working hours"));
+    }
+
+    [Fact]
+    public void The_order_of_the_aliases_in_the_question_does_not_change_the_keys()
+    {
+        Assert.Equal(
+            BusinessInfoScope.ResolveKeys("مواعيدكم إيه والعنوان فين؟"),
+            BusinessInfoScope.ResolveKeys("العنوان فين ومواعيدكم إيه؟"));
     }
 }

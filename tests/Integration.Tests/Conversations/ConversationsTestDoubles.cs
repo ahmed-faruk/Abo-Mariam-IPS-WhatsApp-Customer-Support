@@ -102,9 +102,41 @@ internal sealed class StubCatalogProductDetails : ICatalogProductDetails
 
     public void Withdraw(long productVariantId) => variants.Remove(productVariantId);
 
+    /// <summary>
+    /// The routing revalidation reads the model and its variant rows. A published recommendation stands
+    /// for an active model with an active variant, so a withdrawn one stands for a row that is gone.
+    /// </summary>
     public Task<ProductDetails?> GetDetailsAsync(
         long productModelId,
-        CancellationToken cancellationToken = default) => Task.FromResult<ProductDetails?>(null);
+        CancellationToken cancellationToken = default)
+    {
+        var published = variants.Values.Where(variant => variant.ModelId == productModelId).ToList();
+
+        if (published.Count == 0)
+        {
+            return Task.FromResult<ProductDetails?>(null);
+        }
+
+        return Task.FromResult<ProductDetails?>(new ProductDetails
+        {
+            ModelId = productModelId,
+            ModelCode = published[0].ModelCode,
+            Brand = published[0].Brand,
+            DisplayName = published[0].DisplayName,
+            IsActive = true,
+            Variants =
+            [
+                .. published.Select(variant => new ProductVariantDetails
+                {
+                    VariantId = variant.VariantId,
+                    Sku = variant.Sku,
+                    Price = variant.Price,
+                    Quantity = variant.Quantity,
+                    IsActive = true,
+                }),
+            ],
+        });
+    }
 
     public Task<ProductRecommendation?> GetVariantFactsAsync(
         long productVariantId,

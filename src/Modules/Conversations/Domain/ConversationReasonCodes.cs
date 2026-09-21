@@ -33,4 +33,7 @@ public static class ConversationReasonCodes
 
     /// <summary>The question did not name one of the approved business-info concepts.</summary>
     public const string BusinessInfoKeyNotResolved = "BusinessInfoKeyNotResolved";
+
+    /// <summary>The question named more than one approved business-info concept at once.</summary>
+    public const string BusinessInfoKeyAmbiguous = "BusinessInfoKeyAmbiguous";
 }

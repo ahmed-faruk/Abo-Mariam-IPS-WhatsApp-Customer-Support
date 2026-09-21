@@ -30,6 +30,12 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
 
     public ConversationStateDocument State { get; set; } = ConversationStateDocument.Empty;
 
+    /// <summary>
+    /// Raw persisted JSON. When a test sets it, the turn reads the stored representation back the way
+    /// the real store does, instead of handing the orchestration a document a test already built.
+    /// </summary>
+    public string? StoredStateJson { get; set; }
+
     public string? OpenedCustomerExternalId { get; private set; }
 
     public long? OpenedKnownConversationId { get; private set; }
@@ -69,7 +75,9 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
     public Task<ConversationStateDocument> LoadStateAsync(
         long conversationId,
         DateTime utcNow,
-        CancellationToken cancellationToken) => Task.FromResult(State);
+        CancellationToken cancellationToken) =>
+        Task.FromResult(
+            StoredStateJson is null ? State : ConversationStateDocument.Deserialize(StoredStateJson));
 
     public Task AcceptInboundAsync(
         ConversationTurnContext context,
@@ -220,13 +228,26 @@ internal sealed class FakeCatalogSearch : ICatalogSearch
 /// <summary>The Catalog current-facts contract, answering from fixed test data.</summary>
 internal sealed class FakeCatalogProductDetails : ICatalogProductDetails
 {
+    /// <summary>The current catalogue rows, keyed by model id. A model that was not published does not exist.</summary>
+    public Dictionary<long, ProductDetails> Models { get; } = [];
+
+    public List<long> RequestedModelIds { get; } = [];
+
     public List<long> RequestedVariantIds { get; } = [];
 
-    public Dictionary<long, ProductRecommendation> Variants { get; } = [];
+    public void Publish(ProductDetails details) => Models[details.ModelId] = details;
+
+    /// <summary>Removes a model from the catalogue, as a retired row would disappear.</summary>
+    public void Withdraw(long modelId) => Models.Remove(modelId);
 
     public Task<ProductDetails?> GetDetailsAsync(
         long productModelId,
-        CancellationToken cancellationToken = default) => Task.FromResult<ProductDetails?>(null);
+        CancellationToken cancellationToken = default)
+    {
+        RequestedModelIds.Add(productModelId);
+
+        return Task.FromResult(Models.TryGetValue(productModelId, out var details) ? details : null);
+    }
 
     public Task<ProductRecommendation?> GetVariantFactsAsync(
         long productVariantId,
@@ -234,7 +255,9 @@ internal sealed class FakeCatalogProductDetails : ICatalogProductDetails
     {
         RequestedVariantIds.Add(productVariantId);
 
-        return Task.FromResult(Variants.TryGetValue(productVariantId, out var variant) ? variant : null);
+        // Routing revalidates through GetDetailsAsync, because only that shape distinguishes a retired
+        // row from an active one that currently has no stock.
+        return Task.FromResult<ProductRecommendation?>(null);
     }
 }
 
@@ -306,4 +329,32 @@ internal static class ConversationSamples
             Quantity = 3,
             IsAvailable = true,
         };
+
+    /// <summary>One catalogue model row with exactly the variants the test states.</summary>
+    public static ProductDetails Model(long modelId, bool isActive, params ProductVariantDetails[] variants) =>
+        new()
+        {
+            ModelId = modelId,
+            ModelCode = $"M{modelId}",
+            Brand = "Dell",
+            Model = "P",
+            DisplayName = $"Dell {modelId}",
+            IsActive = isActive,
+            Variants = [.. variants],
+        };
+
+    /// <summary>One catalogue variant row, active or retired, with any quantity including zero.</summary>
+    public static ProductVariantDetails Variant(long variantId, bool isActive, int quantity) =>
+        new()
+        {
+            VariantId = variantId,
+            Sku = $"SKU-{variantId}",
+            Price = 2500m,
+            Quantity = quantity,
+            IsActive = isActive,
+        };
+
+    /// <summary>The ordinary case: one active model with one active variant that holds stock.</summary>
+    public static ProductDetails ActiveModel(long modelId, long variantId, int quantity = 3) =>
+        Model(modelId, isActive: true, Variant(variantId, isActive: true, quantity));
 }

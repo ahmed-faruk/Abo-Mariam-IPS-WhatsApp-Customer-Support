@@ -84,10 +84,10 @@ public sealed record ConversationStateDocument
     public string ToJson() => JsonSerializer.Serialize(this, SerializerOptions);
 
     /// <summary>
-    /// Reads a stored document. Malformed, empty or wrongly shaped JSON is treated as empty state
-    /// instead of throwing, because an unreadable UX context must never break an inbound turn.
-    /// Unknown properties are dropped, so a hand-edited or legacy document cannot smuggle a commercial
-    /// fact into the orchestration.
+    /// Reads a stored document. Malformed, empty, wrongly shaped or structurally unsound JSON is treated
+    /// as empty state instead of throwing, because an unreadable UX context must never break an inbound
+    /// turn. Unknown properties are dropped, so a hand-edited or legacy document cannot smuggle a
+    /// commercial fact into the orchestration.
     /// </summary>
     public static ConversationStateDocument Deserialize(string? json)
     {
@@ -100,7 +100,12 @@ public sealed record ConversationStateDocument
         {
             var document = JsonSerializer.Deserialize<ConversationStateDocument>(json, SerializerOptions);
 
-            return document is null ? Empty : document.Normalize();
+            if (document is null || !document.TryNormalize(out var normalized))
+            {
+                return Empty;
+            }
+
+            return normalized;
         }
         catch (JsonException)
         {
@@ -139,21 +144,75 @@ public sealed record ConversationStateDocument
         return hash.ToHashCode();
     }
 
-    /// <summary>Re-numbers a stored shortlist so its positions are always contiguous and one-based.</summary>
-    private ConversationStateDocument Normalize()
+    /// <summary>
+    /// Validates the stored shape and returns the document a turn may use. A document that is not
+    /// structurally sound is never partially trusted: a null collection, a shortlist whose numbering or
+    /// identifiers cannot be trusted, or a budget that contradicts its own type makes the whole document
+    /// empty. That matters because a positional reference is resolved by the number the customer already
+    /// heard, and because a stored budget is reused by the next refinement of a search.
+    /// </summary>
+    private bool TryNormalize(out ConversationStateDocument normalized)
     {
-        if (Shortlist.Count == 0)
+        normalized = Empty;
+
+        if (HasNullEntry(Shortlist) || (LastFilters is { } filters && !IsStructurallyValid(filters)))
         {
-            return this with { Shortlist = [] };
+            return false;
         }
 
-        var ordered = Shortlist
-            .Where(entry => entry.ModelId > 0 && entry.VariantId > 0)
-            .OrderBy(entry => entry.Position)
-            .Select(entry => (entry.ModelId, entry.VariantId));
+        var ordered = Shortlist.OrderBy(entry => entry.Position).ToList();
+        var seenModels = new HashSet<long>();
 
-        return this with { Shortlist = BuildShortlist(ordered) };
+        for (var index = 0; index < ordered.Count; index++)
+        {
+            var entry = ordered[index];
+
+            // The shortlist is always written as a contiguous one-based display order with one entry per
+            // model, so anything else was not written by this application and cannot be resolved against.
+            if (entry.Position != index + 1
+                || entry.ModelId <= 0
+                || entry.VariantId <= 0
+                || !seenModels.Add(entry.ModelId))
+            {
+                return false;
+            }
+        }
+
+        normalized = this with { Shortlist = ordered };
+
+        return true;
     }
+
+    /// <summary>The stored filters, which a later turn reuses, so they have to be structurally sound.</summary>
+    private static bool IsStructurallyValid(ConversationStateFilters filters)
+    {
+        if (HasBlankEntry(filters.RequiredPorts) || HasBlankEntry(filters.Grades))
+        {
+            return false;
+        }
+
+        return filters.BudgetType switch
+        {
+            null or BudgetType.None => filters.BudgetTarget is null
+                && filters.BudgetMin is null
+                && filters.BudgetMax is null,
+            BudgetType.Soft or BudgetType.Hard => filters.BudgetTarget is > 0m
+                && filters.BudgetMin is null
+                && filters.BudgetMax is null,
+            BudgetType.Range => filters.BudgetTarget is null
+                && filters.BudgetMin is > 0m
+                && filters.BudgetMax is > 0m
+                && filters.BudgetMin <= filters.BudgetMax,
+            _ => false,
+        };
+    }
+
+    private static bool HasNullEntry<T>(IReadOnlyList<T>? values)
+        where T : class =>
+        values is null || values.Any(value => value is null);
+
+    private static bool HasBlankEntry(IReadOnlyList<string>? values) =>
+        values is null || values.Any(string.IsNullOrWhiteSpace);
 }
 
 /// <summary>One position of the shortlist a previous turn showed.</summary>

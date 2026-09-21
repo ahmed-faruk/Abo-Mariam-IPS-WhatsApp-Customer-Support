@@ -127,8 +127,10 @@ public sealed class ConversationStatePersistenceTests(PostgresContainerFixture p
         Assert.Contains("\"shortlist\"", await StateJsonAsync(first.ConversationId), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task A_malformed_state_is_read_as_empty_instead_of_breaking_the_turn()
+    [Theory]
+    [InlineData("""{"shortlist":"not an array"}""")]
+    [InlineData("""{"shortlist":null}""")]
+    public async Task A_malformed_state_is_read_as_empty_instead_of_breaking_the_turn(string storedJson)
     {
         ConversationDoubles doubles = null!;
         await using var host = StartSearchHost(d => doubles = d);
@@ -136,7 +138,7 @@ public sealed class ConversationStatePersistenceTests(PostgresContainerFixture p
         var first = await ProcessAsync(host, "wamid.malformed-1");
 
         await catalog.ExecuteAsync(
-            "UPDATE conversations.conversation_state SET state_json = '{\"shortlist\":\"not an array\"}'::jsonb "
+            $"UPDATE conversations.conversation_state SET state_json = '{storedJson}'::jsonb "
             + $"WHERE conversation_id = {first.ConversationId}");
 
         doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.PriceCheck, reference: "first"));

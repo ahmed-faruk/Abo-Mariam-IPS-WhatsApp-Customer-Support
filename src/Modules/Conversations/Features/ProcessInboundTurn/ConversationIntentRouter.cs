@@ -70,7 +70,12 @@ internal sealed class ConversationIntentRouter(
                 state,
                 ConversationResponseKind.Price,
                 cancellationToken),
-            NluIntent.ProductComparison => Compare(conversationId, customerExternalId, interpretation, state),
+            NluIntent.ProductComparison => await CompareAsync(
+                conversationId,
+                customerExternalId,
+                interpretation,
+                state,
+                cancellationToken),
             NluIntent.BusinessInfo => BusinessInfo(conversationId, customerExternalId, body, state),
             _ => new ConversationRoute(
                 Reply(
@@ -83,9 +88,11 @@ internal sealed class ConversationIntentRouter(
     }
 
     /// <summary>
-    /// A search keeps identifiers, the display order and the stated filters. An empty result set is a
-    /// deterministic no-match against the stated filters, never a fallback to something above a hard
-    /// ceiling or a silently relaxed filter.
+    /// A search keeps identifiers, the display order and the effective filters. A follow-up refines the
+    /// search the conversation already holds: this turn's fields override the stored ones and every field
+    /// it does not name is retained, so "Dell 24" followed by "IPS with HDMI" searches for all four. An
+    /// empty result set is a deterministic no-match against the effective filters, never a fallback to
+    /// something above a hard ceiling or a silently relaxed filter.
     /// </summary>
     private async Task<ConversationRoute> SearchAsync(
         long conversationId,
@@ -94,7 +101,8 @@ internal sealed class ConversationIntentRouter(
         ConversationStateDocument state,
         CancellationToken cancellationToken)
     {
-        var (query, reasonCode) = BuildQuery(interpretation);
+        var filters = MergeFilters(state.LastFilters, interpretation);
+        var (query, reasonCode) = BuildQuery(filters);
 
         if (query is null)
         {
@@ -110,7 +118,7 @@ internal sealed class ConversationIntentRouter(
             LastModelId = results.Count == 0 ? null : results[0].ModelId,
             LastVariantId = results.Count == 0 ? null : results[0].VariantId,
             LastIntent = ProductSearchIntent,
-            LastFilters = BuildFilters(interpretation),
+            LastFilters = filters,
         };
 
         if (results.Count == 0)
@@ -125,11 +133,8 @@ internal sealed class ConversationIntentRouter(
         }
 
         return new ConversationRoute(
-            Reply(conversationId, customerExternalId, ConversationResponseKind.ProductSearchResults) with
-            {
-                ModelIds = [.. results.Select(result => result.ModelId)],
-                VariantIds = [.. results.Select(result => result.VariantId)],
-            },
+            Reply(conversationId, customerExternalId, ConversationResponseKind.ProductSearchResults)
+                .WithCandidates(results.Select(result => (result.ModelId, result.VariantId))),
             next);
     }
 
@@ -166,9 +171,7 @@ internal sealed class ConversationIntentRouter(
             return Clarify(conversationId, customerExternalId, state, reasonCode);
         }
 
-        var facts = await catalogDetails.GetVariantFactsAsync(variantId!.Value, cancellationToken);
-
-        if (facts is null)
+        if (!await IsCurrentlyActiveAsync(modelId!.Value, variantId!.Value, cancellationToken))
         {
             return NoMatch(
                 conversationId,
@@ -189,14 +192,18 @@ internal sealed class ConversationIntentRouter(
     }
 
     /// <summary>
-    /// A comparison covers the current shortlist in display order. It needs two candidates, and a
-    /// reference that cannot be resolved is a clarification rather than a comparison of the wrong items.
+    /// A comparison covers the current shortlist in display order. It needs two candidates, a reference
+    /// that cannot be resolved is a clarification rather than a comparison of the wrong items, and every
+    /// candidate is reloaded through the catalogue before it is named: a stored shortlist is identity and
+    /// order only, so a candidate that was retired since the search makes the comparison a deterministic
+    /// no-match instead of a comparison of stale identifiers.
     /// </summary>
-    private static ConversationRoute Compare(
+    private async Task<ConversationRoute> CompareAsync(
         long conversationId,
         string customerExternalId,
         NluInterpretation interpretation,
-        ConversationStateDocument state)
+        ConversationStateDocument state,
+        CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(interpretation.Reference))
         {
@@ -219,19 +226,51 @@ internal sealed class ConversationIntentRouter(
                 ConversationReasonCodes.ComparisonNeedsTwoCandidates);
         }
 
-        return new ConversationRoute(
-            Reply(conversationId, customerExternalId, ConversationResponseKind.ProductComparison) with
+        foreach (var entry in shortlist)
+        {
+            if (!await IsCurrentlyActiveAsync(entry.ModelId, entry.VariantId, cancellationToken))
             {
-                ModelIds = [.. shortlist.Select(entry => entry.ModelId)],
-                VariantIds = [.. shortlist.Select(entry => entry.VariantId)],
-            },
+                return NoMatch(
+                    conversationId,
+                    customerExternalId,
+                    state,
+                    interpretation,
+                    ConversationReasonCodes.ProductNoLongerAvailable);
+            }
+        }
+
+        return new ConversationRoute(
+            Reply(conversationId, customerExternalId, ConversationResponseKind.ProductComparison)
+                .WithCandidates(shortlist.Select(entry => (entry.ModelId, entry.VariantId))),
             state with { LastIntent = nameof(NluIntent.ProductComparison) });
     }
 
     /// <summary>
-    /// A business-info question resolves to an approved Storefront key through the deterministic
-    /// allowlist. The stored answer is deliberately not read here: the renderer reads the current
-    /// value, and the UX state never holds one.
+    /// True when the referenced model and variant still exist and are currently active. The current
+    /// quantity is deliberately not part of this decision: an active variant with no stock is still a real
+    /// product the catalogue can price and report as unavailable, while a retired or missing row can no
+    /// longer be answered about at all.
+    /// </summary>
+    private async Task<bool> IsCurrentlyActiveAsync(
+        long modelId,
+        long variantId,
+        CancellationToken cancellationToken)
+    {
+        var details = await catalogDetails.GetDetailsAsync(modelId, cancellationToken);
+
+        if (details is not { IsActive: true } active)
+        {
+            return false;
+        }
+
+        return active.Variants.Any(variant => variant.VariantId == variantId && variant.IsActive);
+    }
+
+    /// <summary>
+    /// A business-info question resolves to the approved Storefront keys it names through the deterministic
+    /// allowlist. The stored answer is deliberately not read here: the renderer reads the current value,
+    /// and the UX state never holds one. A question that names no approved concept, or that names more than
+    /// one at once, is a clarification rather than an answer to a concept the customer may not have meant.
     /// </summary>
     private static ConversationRoute BusinessInfo(
         long conversationId,
@@ -239,30 +278,43 @@ internal sealed class ConversationIntentRouter(
         string? body,
         ConversationStateDocument state)
     {
-        var key = BusinessInfoScope.ResolveKey(body);
+        var keys = BusinessInfoScope.ResolveKeys(body);
 
-        return key is null
-            ? Clarify(
+        if (keys.Count == 0)
+        {
+            return Clarify(
                 conversationId,
                 customerExternalId,
                 state,
-                ConversationReasonCodes.BusinessInfoKeyNotResolved)
-            : new ConversationRoute(
-                Reply(conversationId, customerExternalId, ConversationResponseKind.BusinessInfo) with
-                {
-                    StorefrontKey = key,
-                },
-                state with { LastIntent = nameof(NluIntent.BusinessInfo) });
+                ConversationReasonCodes.BusinessInfoKeyNotResolved);
+        }
+
+        if (keys.Count > 1)
+        {
+            // Answering one of the two concepts would silently ignore half of what the customer asked.
+            return Clarify(
+                conversationId,
+                customerExternalId,
+                state,
+                ConversationReasonCodes.BusinessInfoKeyAmbiguous);
+        }
+
+        return new ConversationRoute(
+            Reply(conversationId, customerExternalId, ConversationResponseKind.BusinessInfo) with
+            {
+                StorefrontKey = keys[0],
+            },
+            state with { LastIntent = nameof(NluIntent.BusinessInfo) });
     }
 
     /// <summary>
-    /// Maps one structured interpretation to the catalogue query. A hard budget stays exactly the
-    /// ceiling the customer stated, and a stated resolution that cannot be read is a clarification
-    /// instead of a silently dropped filter.
+    /// Maps the effective filters to the catalogue query. A hard budget stays exactly the ceiling the
+    /// customer stated, and a resolution that cannot be read is a clarification instead of a silently
+    /// dropped filter.
     /// </summary>
-    private static (ProductSearchQuery? Query, string? ReasonCode) BuildQuery(NluInterpretation interpretation)
+    private static (ProductSearchQuery? Query, string? ReasonCode) BuildQuery(ConversationStateFilters filters)
     {
-        var (width, height, resolutionReason) = ParseResolution(interpretation.Resolution);
+        var (width, height, resolutionReason) = ParseResolution(filters.Resolution);
 
         if (resolutionReason is not null)
         {
@@ -271,29 +323,73 @@ internal sealed class ConversationIntentRouter(
 
         return (new ProductSearchQuery
         {
-            ModelCode = interpretation.ModelCode,
-            Brand = interpretation.Brand,
-            SizeInches = interpretation.SizeInches,
-            PanelType = interpretation.Panel,
+            ModelCode = filters.ModelCode,
+            Brand = filters.Brand,
+            SizeInches = filters.SizeInches,
+            PanelType = filters.Panel,
             MinResolutionWidth = width,
             MinResolutionHeight = height,
-            MinRefreshRate = interpretation.MinRefreshRate,
-            RequiredPorts = interpretation.RequiredPorts,
-            Grades = interpretation.Grades,
-            Budget = BuildBudget(interpretation),
-            UseCase = interpretation.UseCase,
+            MinRefreshRate = filters.MinRefreshRate,
+            RequiredPorts = filters.RequiredPorts,
+            Grades = filters.Grades,
+            Budget = BuildBudget(filters),
+            UseCase = filters.UseCase,
         }, null);
     }
+
+    /// <summary>
+    /// The effective filters of a search: a field this turn states overrides the stored one, and every
+    /// field it does not state is retained, so a follow-up refines the search instead of discarding it.
+    /// An explicit budget replaces the stored budget, while a turn that states no budget at all keeps
+    /// it — a hard ceiling can therefore never be dropped or widened by a refinement that did not
+    /// mention money. Collections are replaced when this turn states them, never concatenated with the
+    /// stored ones, because a stale port or grade is not the same request as a freshly stated one.
+    /// </summary>
+    private static ConversationStateFilters MergeFilters(
+        ConversationStateFilters? stored,
+        NluInterpretation interpretation)
+    {
+        var current = BuildFilters(interpretation);
+
+        if (stored is null)
+        {
+            return current;
+        }
+
+        var (budgetType, target, min, max) = current.BudgetType is not (null or BudgetType.None)
+            ? (current.BudgetType, current.BudgetTarget, current.BudgetMin, current.BudgetMax)
+            : (stored.BudgetType, stored.BudgetTarget, stored.BudgetMin, stored.BudgetMax);
+
+        return new ConversationStateFilters
+        {
+            Brand = Prefer(current.Brand, stored.Brand),
+            ModelCode = Prefer(current.ModelCode, stored.ModelCode),
+            SizeInches = current.SizeInches ?? stored.SizeInches,
+            Panel = Prefer(current.Panel, stored.Panel),
+            Resolution = Prefer(current.Resolution, stored.Resolution),
+            MinRefreshRate = current.MinRefreshRate ?? stored.MinRefreshRate,
+            RequiredPorts = current.RequiredPorts.Count > 0 ? current.RequiredPorts : stored.RequiredPorts,
+            Grades = current.Grades.Count > 0 ? current.Grades : stored.Grades,
+            BudgetType = budgetType,
+            BudgetTarget = target,
+            BudgetMin = min,
+            BudgetMax = max,
+            UseCase = Prefer(current.UseCase, stored.UseCase),
+        };
+    }
+
+    private static string? Prefer(string? current, string? stored) =>
+        string.IsNullOrWhiteSpace(current) ? stored : current;
 
     /// <summary>
     /// The budget shapes of docs/TECHNICAL.md section 11. The hard ceiling is carried through
     /// unchanged; no path here may raise it.
     /// </summary>
-    private static ProductBudget? BuildBudget(NluInterpretation interpretation) => interpretation.BudgetType switch
+    private static ProductBudget? BuildBudget(ConversationStateFilters filters) => filters.BudgetType switch
     {
-        NluBudgetType.Soft when interpretation.BudgetTarget is { } target => ProductBudget.Soft(target),
-        NluBudgetType.Hard when interpretation.BudgetTarget is { } ceiling => ProductBudget.Hard(ceiling),
-        NluBudgetType.Range when interpretation.BudgetMin is { } min && interpretation.BudgetMax is { } max =>
+        BudgetType.Soft when filters.BudgetTarget is { } target => ProductBudget.Soft(target),
+        BudgetType.Hard when filters.BudgetTarget is { } ceiling => ProductBudget.Hard(ceiling),
+        BudgetType.Range when filters.BudgetMin is { } min && filters.BudgetMax is { } max =>
             ProductBudget.Range(min, max),
         _ => null,
     };

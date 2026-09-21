@@ -93,6 +93,56 @@ public sealed class ConversationStateDocumentTests
         Assert.Equal(ConversationStateDocument.Empty, ConversationStateDocument.Deserialize(json));
     }
 
+    [Theory]
+    // A null collection is not a shape the state contract can express, so the document is read as empty
+    // instead of throwing while it is normalized.
+    [InlineData("""{"shortlist":null}""")]
+    [InlineData("""{"shortlist":[null]}""")]
+    [InlineData("""{"lastFilters":{"requiredPorts":null}}""")]
+    [InlineData("""{"lastFilters":{"grades":null}}""")]
+    [InlineData("""{"lastFilters":{"requiredPorts":["HDMI",null]}}""")]
+    // Positions are the numbering the customer already heard, so a shortlist whose numbering is not a
+    // contiguous one-based display order cannot be trusted for a positional reference.
+    [InlineData("""{"shortlist":[{"position":2,"modelId":10,"variantId":21}]}""")]
+    [InlineData("""{"shortlist":[{"position":0,"modelId":10,"variantId":21}]}""")]
+    [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":21},{"position":1,"modelId":11,"variantId":25}]}""")]
+    [InlineData("""{"shortlist":[{"position":1,"modelId":0,"variantId":21}]}""")]
+    [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":-1}]}""")]
+    [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":21},{"position":2,"modelId":10,"variantId":99}]}""")]
+    [InlineData("""{"shortlist":[{"position":"first","modelId":10,"variantId":21}]}""")]
+    // A stored budget that contradicts its own type could silently widen a later search, so it is
+    // rejected as well.
+    [InlineData("""{"lastFilters":{"budgetType":0,"budgetTarget":2500}}""")]
+    [InlineData("""{"lastFilters":{"budgetType":2,"budgetTarget":null,"budgetMin":1000}}""")]
+    [InlineData("""{"lastFilters":{"budgetType":2,"budgetTarget":0}}""")]
+    [InlineData("""{"lastFilters":{"budgetType":3,"budgetMin":3000,"budgetMax":null}}""")]
+    [InlineData("""{"lastFilters":{"budgetType":3,"budgetMin":4000,"budgetMax":3000}}""")]
+    [InlineData("""{"lastFilters":{"budgetType":1,"budgetTarget":3000,"budgetMax":4000}}""")]
+    public void A_structurally_invalid_stored_document_is_read_as_empty(string json)
+    {
+        Assert.Equal(ConversationStateDocument.Empty, ConversationStateDocument.Deserialize(json));
+    }
+
+    [Fact]
+    public void A_stored_document_with_an_explicit_range_budget_still_round_trips()
+    {
+        var document = ConversationStateDocument.Empty with
+        {
+            LastFilters = new ConversationStateFilters
+            {
+                BudgetType = BudgetType.Range,
+                BudgetMin = 2000,
+                BudgetMax = 3000,
+            },
+        };
+
+        var reloaded = ConversationStateDocument.Deserialize(document.ToJson());
+
+        Assert.Equal(BudgetType.Range, reloaded.LastFilters!.BudgetType);
+        Assert.Equal(2000, reloaded.LastFilters.BudgetMin);
+        Assert.Equal(3000, reloaded.LastFilters.BudgetMax);
+    }
+
     [Fact]
     public void An_unknown_commercial_fact_in_stored_json_is_ignored()
     {

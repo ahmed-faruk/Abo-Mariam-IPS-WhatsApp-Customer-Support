@@ -253,6 +253,115 @@ public sealed class ProcessInboundTurnTests
         Assert.Equal(ConversationResponseKind.UnsupportedMedia, Assert.Single(harness.Renderer.Intents).Kind);
     }
 
+    [Fact]
+    public async Task A_follow_up_search_refines_the_search_the_previous_turn_stored()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.ProductSearch, brand: "Dell", sizeInches: 24)));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.refine-1"));
+
+        harness.Nlu.Answer = _ => NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.ProductSearch, panel: "IPS", requiredPorts: ["HDMI"]));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.refine-2"));
+
+        var query = harness.Search.Queries[^1];
+
+        Assert.Equal("Dell", query.Brand);
+        Assert.Equal(24, query.SizeInches);
+        Assert.Equal("IPS", query.PanelType);
+        Assert.Equal(["HDMI"], query.RequiredPorts);
+    }
+
+    [Fact]
+    public async Task A_comparison_after_a_candidate_left_the_catalogue_is_a_no_match()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.ProductSearch)));
+        harness.Search.Results =
+        [
+            ConversationSamples.Recommendation(10, 21),
+            ConversationSamples.Recommendation(11, 25),
+        ];
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.compare-1"));
+
+        harness.Details.Withdraw(11);
+        harness.Nlu.Answer = _ => NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.ProductComparison));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.compare-2"));
+
+        var intent = harness.Renderer.Intents[^1];
+
+        Assert.Equal(ConversationResponseKind.NoMatch, intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, intent.ReasonCode);
+        Assert.DoesNotContain(
+            ConversationResponseKind.ProductComparison,
+            harness.Renderer.Intents.Select(recorded => recorded.Kind));
+    }
+
+    [Fact]
+    public async Task A_reference_to_a_model_retired_after_the_search_is_a_no_match()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.ProductSearch)));
+        harness.Search.Results = [ConversationSamples.Recommendation(10, 21)];
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.retired-1"));
+
+        harness.Details.Publish(ConversationSamples.Model(
+            10,
+            isActive: false,
+            ConversationSamples.Variant(21, isActive: true, quantity: 3)));
+        harness.Nlu.Answer = _ => NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "first"));
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.retired-2"));
+
+        var intent = harness.Renderer.Intents[^1];
+
+        Assert.Equal(ConversationResponseKind.NoMatch, intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, intent.ReasonCode);
+        Assert.DoesNotContain(ConversationResponseKind.Price, harness.Renderer.Intents.Select(recorded => recorded.Kind));
+    }
+
+    [Fact]
+    public async Task A_structurally_malformed_stored_state_never_breaks_the_turn()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "first")));
+        harness.Store.StoredStateJson = """{"shortlist":null}""";
+
+        var result = await harness.ProcessAsync(ConversationSamples.Text());
+
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+
+        var intent = Assert.Single(harness.Renderer.Intents);
+
+        Assert.Equal(ConversationResponseKind.Clarification, intent.Kind);
+        Assert.Equal(ConversationReferenceReasons.ShortlistEmpty, intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task An_ambiguous_business_info_question_asks_instead_of_answering_one_concept()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.BusinessInfo)));
+
+        await harness.ProcessAsync(ConversationSamples.Text(body: "مواعيدكم إيه والعنوان فين؟"));
+
+        var intent = Assert.Single(harness.Renderer.Intents);
+
+        Assert.Equal(ConversationResponseKind.Clarification, intent.Kind);
+        Assert.Equal(ConversationReasonCodes.BusinessInfoKeyAmbiguous, intent.ReasonCode);
+        Assert.Null(intent.StorefrontKey);
+    }
+
     /// <summary>One orchestration under test, wired the way the host wires it.</summary>
     private sealed class Harness
     {
@@ -261,12 +370,16 @@ public sealed class ProcessInboundTurnTests
             FakeAiNluClient nlu,
             FakeConversationRenderer renderer,
             RecordingOutboundMessageQueue outbox,
+            FakeCatalogSearch search,
+            FakeCatalogProductDetails details,
             ProcessInboundTurnHandler handler)
         {
             Store = store;
             Nlu = nlu;
             Renderer = renderer;
             Outbox = outbox;
+            Search = search;
+            Details = details;
             Handler = handler;
         }
 
@@ -277,6 +390,10 @@ public sealed class ProcessInboundTurnTests
         internal FakeConversationRenderer Renderer { get; }
 
         internal RecordingOutboundMessageQueue Outbox { get; }
+
+        internal FakeCatalogSearch Search { get; }
+
+        internal FakeCatalogProductDetails Details { get; }
 
         internal ProcessInboundTurnHandler Handler { get; }
 
@@ -289,7 +406,9 @@ public sealed class ProcessInboundTurnTests
             var nlu = new FakeAiNluClient { Answer = _ => analysis };
             var renderer = new FakeConversationRenderer { Body = renderedBody };
             var outbox = new RecordingOutboundMessageQueue();
-            var router = new ConversationIntentRouter(new FakeCatalogSearch(), new FakeCatalogProductDetails());
+            var search = new FakeCatalogSearch();
+            var details = new FakeCatalogProductDetails();
+            var router = new ConversationIntentRouter(search, details);
             var clock = new TestClock(ConversationSamples.Now);
 
             return new Harness(
@@ -297,6 +416,8 @@ public sealed class ProcessInboundTurnTests
                 nlu,
                 renderer,
                 outbox,
+                search,
+                details,
                 new ProcessInboundTurnHandler(store, router, nlu, renderer, outbox, clock));
         }
 

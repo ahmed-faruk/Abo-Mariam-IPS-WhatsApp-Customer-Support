@@ -111,6 +111,128 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
+    public async Task A_follow_up_search_merges_the_stored_filters_with_the_new_ones()
+    {
+        var harness = new RouterHarness();
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                panel: "IPS",
+                requiredPorts: ["HDMI"]),
+            state: StoredFilters(new ConversationStateFilters { Brand = "Dell", SizeInches = 24 }));
+
+        var query = Assert.Single(harness.Search.Queries);
+
+        Assert.Equal("Dell", query.Brand);
+        Assert.Equal(24, query.SizeInches);
+        Assert.Equal("IPS", query.PanelType);
+        Assert.Equal(["HDMI"], query.RequiredPorts);
+
+        // The effective filters, not the newest turn's own filters, are what the next refinement builds on
+        // and what the conversation stores.
+        Assert.Equal("Dell", route.State.LastFilters!.Brand);
+        Assert.Equal(24, route.State.LastFilters.SizeInches);
+        Assert.Equal("IPS", route.State.LastFilters.Panel);
+        Assert.Equal(["HDMI"], route.State.LastFilters.RequiredPorts);
+    }
+
+    [Fact]
+    public async Task A_follow_up_without_a_budget_keeps_the_stored_soft_budget()
+    {
+        var harness = new RouterHarness();
+
+        await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductSearch, panel: "IPS"),
+            state: StoredFilters(new ConversationStateFilters
+            {
+                BudgetType = BudgetType.Soft,
+                BudgetTarget = 3000,
+            }));
+
+        var query = Assert.Single(harness.Search.Queries);
+
+        Assert.Equal(BudgetType.Soft, query.Budget!.Type);
+        Assert.Equal(3000, query.Budget.Target);
+    }
+
+    [Fact]
+    public async Task A_follow_up_with_an_explicit_ceiling_replaces_the_stored_soft_budget()
+    {
+        var harness = new RouterHarness();
+
+        await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                budgetType: NluBudgetType.Hard,
+                budgetTarget: 2500),
+            state: StoredFilters(new ConversationStateFilters
+            {
+                BudgetType = BudgetType.Soft,
+                BudgetTarget = 3000,
+            }));
+
+        var query = Assert.Single(harness.Search.Queries);
+
+        Assert.Equal(BudgetType.Hard, query.Budget!.Type);
+        Assert.Equal(2500, query.Budget.Target);
+        Assert.Null(query.Budget.Min);
+        Assert.Null(query.Budget.Max);
+    }
+
+    [Fact]
+    public async Task A_follow_up_that_names_a_brand_replaces_the_stored_brand()
+    {
+        var harness = new RouterHarness();
+
+        await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductSearch, brand: "Samsung"),
+            state: StoredFilters(new ConversationStateFilters { Brand = "Dell" }));
+
+        Assert.Equal("Samsung", Assert.Single(harness.Search.Queries).Brand);
+    }
+
+    [Fact]
+    public async Task A_follow_up_that_names_ports_replaces_the_stored_ports()
+    {
+        var harness = new RouterHarness();
+
+        await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                requiredPorts: ["DisplayPort"]),
+            state: StoredFilters(new ConversationStateFilters { RequiredPorts = ["HDMI"] }));
+
+        Assert.Equal(["DisplayPort"], Assert.Single(harness.Search.Queries).RequiredPorts);
+    }
+
+    [Fact]
+    public async Task A_search_without_stored_state_uses_only_the_current_turn()
+    {
+        var harness = new RouterHarness();
+
+        await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                brand: "Dell",
+                sizeInches: 24));
+
+        var query = Assert.Single(harness.Search.Queries);
+
+        Assert.Equal("Dell", query.Brand);
+        Assert.Equal(24, query.SizeInches);
+        Assert.Null(query.PanelType);
+        Assert.Empty(query.RequiredPorts);
+        Assert.Null(query.Budget);
+    }
+
+    [Fact]
     public async Task A_search_that_finds_nothing_is_a_deterministic_no_match()
     {
         var harness = new RouterHarness();
@@ -161,7 +283,7 @@ public sealed class ConversationIntentRouterTests
     {
         var harness = new RouterHarness();
         harness.Search.ModelCodeResult = ConversationSamples.Recommendation(10, 21);
-        harness.Details.Variants[21] = ConversationSamples.Recommendation(10, 21);
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
 
         var route = await harness.RouteAsync(
             NluIntent.ProductDetails,
@@ -187,9 +309,7 @@ public sealed class ConversationIntentRouterTests
         long expectedVariantId)
     {
         var harness = new RouterHarness();
-        harness.Details.Variants[expectedVariantId] = ConversationSamples.Recommendation(
-            expectedModelId,
-            expectedVariantId);
+        harness.Details.Publish(ConversationSamples.ActiveModel(expectedModelId, expectedVariantId));
 
         var route = await harness.RouteAsync(
             NluIntent.PriceCheck,
@@ -208,20 +328,22 @@ public sealed class ConversationIntentRouterTests
     public async Task The_current_facts_are_read_again_for_every_price_question()
     {
         var harness = new RouterHarness();
-        harness.Details.Variants[21] = ConversationSamples.Recommendation(10, 21, price: 2750);
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
 
         await harness.RouteAsync(
             NluIntent.PriceCheck,
             interpretation: ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "first"),
             state: StateWithShortlist((10, 21)));
 
-        Assert.Equal([21], harness.Details.RequestedVariantIds);
+        Assert.Equal([10], harness.Details.RequestedModelIds);
     }
 
     [Fact]
     public async Task A_stale_shortlist_entry_whose_variant_is_gone_is_a_deterministic_no_match()
     {
         var harness = new RouterHarness();
+        // The model still exists, but the variant the customer was shown does not.
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 26));
 
         var route = await harness.RouteAsync(
             NluIntent.AvailabilityCheck,
@@ -244,7 +366,7 @@ public sealed class ConversationIntentRouterTests
 
         Assert.Equal(ConversationResponseKind.Clarification, route.Intent.Kind);
         Assert.Equal(ConversationReferenceReasons.UnresolvedReference, route.Intent.ReasonCode);
-        Assert.Empty(harness.Details.RequestedVariantIds);
+        Assert.Empty(harness.Details.RequestedModelIds);
     }
 
     [Fact]
@@ -264,7 +386,7 @@ public sealed class ConversationIntentRouterTests
     public async Task An_unqualified_follow_up_uses_the_current_reference_and_never_the_first_position()
     {
         var harness = new RouterHarness();
-        harness.Details.Variants[25] = ConversationSamples.Recommendation(11, 25);
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
         var state = StateWithShortlist((10, 21), (11, 25)) with { LastModelId = 11, LastVariantId = 25 };
 
         var route = await harness.RouteAsync(
@@ -281,6 +403,8 @@ public sealed class ConversationIntentRouterTests
     public async Task A_comparison_covers_the_current_shortlist_in_display_order()
     {
         var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
 
         var route = await harness.RouteAsync(
             NluIntent.ProductComparison,
@@ -303,6 +427,128 @@ public sealed class ConversationIntentRouterTests
 
         Assert.Equal(ConversationResponseKind.Clarification, route.Intent.Kind);
         Assert.Equal(ConversationReasonCodes.ComparisonNeedsTwoCandidates, route.Intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_comparison_reloads_every_candidate_through_the_catalogue()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        Assert.Equal(ConversationResponseKind.ProductComparison, route.Intent.Kind);
+        Assert.Equal([10, 11], route.Intent.ModelIds);
+        Assert.Equal([10, 11], harness.Details.RequestedModelIds);
+    }
+
+    [Fact]
+    public async Task A_comparison_whose_candidate_left_the_catalogue_is_a_no_match()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+        harness.Details.Withdraw(11);
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, route.Intent.ReasonCode);
+        Assert.Empty(route.Intent.ModelIds);
+        Assert.Empty(route.Intent.VariantIds);
+    }
+
+    [Fact]
+    public async Task A_comparison_with_an_inactive_model_is_a_no_match()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.Model(
+            11,
+            isActive: false,
+            ConversationSamples.Variant(25, isActive: true, quantity: 3)));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, route.Intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_comparison_with_an_inactive_variant_is_a_no_match()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.Model(
+            11,
+            isActive: true,
+            ConversationSamples.Variant(25, isActive: false, quantity: 3)));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, route.Intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task An_active_product_with_no_stock_is_still_answered_instead_of_being_treated_as_retired()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21, quantity: 0));
+
+        var route = await harness.RouteAsync(
+            NluIntent.AvailabilityCheck,
+            interpretation: ConversationSamples.Interpretation(NluIntent.AvailabilityCheck, reference: "first"),
+            state: StateWithShortlist((10, 21)));
+
+        Assert.Equal(ConversationResponseKind.Availability, route.Intent.Kind);
+        Assert.Equal(10, route.Intent.ModelId);
+        Assert.Equal(21, route.Intent.VariantId);
+    }
+
+    [Fact]
+    public async Task A_reference_to_a_retired_model_is_a_deterministic_no_match()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.Model(
+            10,
+            isActive: false,
+            ConversationSamples.Variant(21, isActive: true, quantity: 3)));
+
+        var route = await harness.RouteAsync(
+            NluIntent.PriceCheck,
+            interpretation: ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "first"),
+            state: StateWithShortlist((10, 21)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, route.Intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_reference_to_a_retired_variant_is_a_deterministic_no_match()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.Model(
+            10,
+            isActive: true,
+            ConversationSamples.Variant(21, isActive: false, quantity: 3)));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductDetails,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductDetails, reference: "first"),
+            state: StateWithShortlist((10, 21)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ProductNoLongerAvailable, route.Intent.ReasonCode);
     }
 
     [Theory]
@@ -341,6 +587,21 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
+    public async Task A_business_question_that_names_two_concepts_is_a_clarification_instead_of_one_answer()
+    {
+        var harness = new RouterHarness();
+
+        var route = await harness.RouteAsync(
+            NluIntent.BusinessInfo,
+            interpretation: ConversationSamples.Interpretation(NluIntent.BusinessInfo),
+            body: "مواعيدكم إيه والعنوان فين؟");
+
+        Assert.Equal(ConversationResponseKind.Clarification, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.BusinessInfoKeyAmbiguous, route.Intent.ReasonCode);
+        Assert.Null(route.Intent.StorefrontKey);
+    }
+
+    [Fact]
     public async Task No_successful_route_ever_stores_a_commercial_fact()
     {
         var harness = new RouterHarness();
@@ -360,6 +621,9 @@ public sealed class ConversationIntentRouterTests
             LastModelId = candidates[0].ModelId,
             LastVariantId = candidates[0].VariantId,
         };
+
+    private static ConversationStateDocument StoredFilters(ConversationStateFilters filters) =>
+        ConversationStateDocument.Empty with { LastFilters = filters };
 
     /// <summary>The router with its two module contracts replaced by deterministic test data.</summary>
     private sealed class RouterHarness

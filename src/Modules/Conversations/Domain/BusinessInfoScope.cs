@@ -5,10 +5,11 @@ using WhatsAppMonitorAssistant.Modules.Storefront.Contracts;
 namespace WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 
 /// <summary>
-/// Maps an original business-info question to one approved Storefront key through an explicit
+/// Maps an original business-info question to the approved Storefront keys it names through an explicit
 /// deterministic allowlist, as the approved Issue #11 decision requires. The customer's text is only
 /// matched, never stored and never answered from: the value always comes from Storefront. A question
-/// outside the allowlist resolves to nothing, so the turn becomes a clarification instead of a guess.
+/// outside the allowlist resolves to nothing, and a question that names more than one concept resolves
+/// to all of them, so the caller asks which answer was meant instead of guessing at one of them.
 /// </summary>
 public static class BusinessInfoScope
 {
@@ -27,18 +28,21 @@ public static class BusinessInfoScope
     ];
 
     /// <summary>
-    /// The canonical key of the approved concept the question is about, or null when the question does
-    /// not name one. When a question names more than one concept, the first entry of the canonical
-    /// allowlist wins, so the result is deterministic.
+    /// Every distinct approved concept the question names, in the canonical allowlist order. The result
+    /// is empty when the question names none, holds exactly one entry when it names exactly one concept,
+    /// and holds more than one entry when the question is ambiguous. Repeating an alias of the same
+    /// concept still resolves to that one key, so only genuinely different concepts widen the result.
     /// </summary>
-    public static string? ResolveKey(string? text)
+    public static IReadOnlyList<string> ResolveKeys(string? text)
     {
         var normalized = Normalize(text);
 
         if (normalized is null)
         {
-            return null;
+            return [];
         }
+
+        var keys = new List<string>();
 
         foreach (var (key, keywords) in Entries)
         {
@@ -46,12 +50,14 @@ public static class BusinessInfoScope
             {
                 if (Contains(normalized, keyword))
                 {
-                    return key;
+                    keys.Add(key);
+
+                    break;
                 }
             }
         }
 
-        return null;
+        return keys;
     }
 
     /// <summary>
