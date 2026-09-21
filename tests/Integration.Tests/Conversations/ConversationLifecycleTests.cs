@@ -177,6 +177,63 @@ public sealed class ConversationLifecycleTests(PostgresContainerFixture postgres
     }
 
     [Fact]
+    public async Task An_operator_takeover_moves_an_ai_conversation_to_human()
+    {
+        await using var host = StartHost();
+        var turn = await ProcessAsync(host, "wamid.takeover", "20100000001");
+
+        await using (var scope = host.CreateScope())
+        {
+            var control = scope.ServiceProvider.GetRequiredService<IConversationModeControl>();
+
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await control.TakeOverAsync(turn.ConversationId));
+            Assert.Equal("Human", await catalog.ScalarAsync(
+                $"SELECT mode FROM conversations.conversation WHERE id = {turn.ConversationId}"));
+
+            // Taking over a conversation a human already owns changes nothing at all.
+            Assert.Equal(
+                ConversationModeChangeOutcome.Unchanged,
+                await control.TakeOverAsync(turn.ConversationId));
+        }
+
+        // A taken-over conversation records the next inbound without any automatic reply.
+        var held = await ProcessAsync(host, "wamid.takeover-next", "20100000001");
+
+        Assert.Equal(ConversationTurnOutcome.AwaitingHuman, held.Outcome);
+        Assert.Equal(ConversationMode.Human, held.Mode);
+    }
+
+    [Fact]
+    public async Task An_operator_takeover_never_reopens_a_closed_conversation()
+    {
+        await using var host = StartHost();
+        var turn = await ProcessAsync(host, "wamid.takeover-closed", "20100000001");
+
+        await using var scope = host.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<IConversationModeControl>();
+
+        Assert.Equal(ConversationModeChangeOutcome.Changed, await control.CloseAsync(turn.ConversationId));
+        Assert.Equal(ConversationModeChangeOutcome.Unchanged, await control.TakeOverAsync(turn.ConversationId));
+        Assert.Equal("Closed", await catalog.ScalarAsync(
+            $"SELECT mode FROM conversations.conversation WHERE id = {turn.ConversationId}"));
+    }
+
+    [Fact]
+    public async Task A_mode_change_of_an_unknown_conversation_is_not_found()
+    {
+        await using var host = StartHost();
+
+        await using var scope = host.CreateScope();
+        var control = scope.ServiceProvider.GetRequiredService<IConversationModeControl>();
+
+        Assert.Equal(ConversationModeChangeOutcome.NotFound, await control.TakeOverAsync(987654321));
+        Assert.Equal(ConversationModeChangeOutcome.NotFound, await control.ReleaseToAiAsync(987654321));
+        Assert.Equal(ConversationModeChangeOutcome.NotFound, await control.CloseAsync(987654321));
+    }
+
+    [Fact]
     public async Task A_concurrent_first_turn_of_one_customer_converges_on_one_customer_and_one_conversation()
     {
         await using var firstHost = StartHost();

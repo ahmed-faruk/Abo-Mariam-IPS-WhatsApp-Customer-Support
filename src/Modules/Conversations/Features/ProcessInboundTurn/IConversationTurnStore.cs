@@ -27,6 +27,17 @@ internal interface IConversationTurnStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Takes the conversation's final-operation lock and returns the handle that owns it. Everything
+    /// that reads the current mode and then acts on it - the last authorization of an automatic reply,
+    /// and every explicit mode change - runs inside this one serialized section, so two replicas can
+    /// never disagree about who owns the conversation. The handle releases the lock when it is
+    /// committed or disposed.
+    /// </summary>
+    Task<IConversationOperation> BeginFinalOperationAsync(
+        long conversationId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Records the accepted inbound: the lifecycle timestamps and the 24-hour service window refreshed
     /// from the message's provider timestamp.
     /// </summary>
@@ -58,4 +69,25 @@ internal interface IConversationTurnStore
 
     /// <summary>Records that a reply of this conversation was accepted by the durable Outbox.</summary>
     Task RecordOutboundAsync(long conversationId, DateTime utcNow, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// One serialized Conversations operation on a single conversation. The lock it holds is released by the
+/// commit, and by the disposal that always follows it, so a failed or abandoned operation can never leave
+/// the conversation locked.
+/// </summary>
+internal interface IConversationOperation : IAsyncDisposable
+{
+    /// <summary>
+    /// Reads the conversation mode as it is stored right now, not as this turn captured it when it
+    /// started. The answer is the final authorization: it decides whether an automatic reply may still
+    /// be produced.
+    /// </summary>
+    Task<string> ReloadModeAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Commits this operation's Conversations changes and releases the lock. A handle that is disposed
+    /// without being committed rolls its changes back.
+    /// </summary>
+    Task CommitAsync(CancellationToken cancellationToken);
 }

@@ -3,6 +3,8 @@ using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Modules.Catalog.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Conversations;
 
@@ -30,7 +32,8 @@ internal static class ConversationsTestDoubles
 
         services.AddSingleton<TimeProvider>(new FixedClock(Now));
         services.AddSingleton<IAiNluClient>(nlu);
-        services.AddSingleton<ICatalogSearch>(new StubCatalogSearch(searchResults ?? [], knownModelCode));
+        var search = new StubCatalogSearch(searchResults ?? [], knownModelCode);
+        services.AddSingleton<ICatalogSearch>(search);
         services.AddSingleton<ICatalogProductDetails>(details);
 
         if (includeRenderer)
@@ -38,7 +41,47 @@ internal static class ConversationsTestDoubles
             services.AddSingleton<IConversationRenderer>(renderer);
         }
 
-        return new ConversationDoubles(nlu, details, renderer);
+        return new ConversationDoubles(nlu, details, renderer, search);
+    }
+
+    /// <summary>
+    /// Replaces the Messaging Outbox with one whose first durable enqueue fails, the way a lost
+    /// connection or a crashed worker would, so a test can drive the documented "the attempt failed,
+    /// the Inbox retries it" path with the real queue behind the retry.
+    /// </summary>
+    public static void AddFirstAttemptFailingOutbox(this IServiceCollection services)
+    {
+        services.AddSingleton<EnqueueAttemptCounter>();
+        services.AddScoped<OutboundMessageQueue>();
+        services.AddScoped<IOutboundMessageQueue>(provider => new FirstAttemptFailingOutbox(
+            provider.GetRequiredService<OutboundMessageQueue>(),
+            provider.GetRequiredService<EnqueueAttemptCounter>()));
+    }
+}
+
+/// <summary>Counts the durable enqueues of one test host across every scope of that test.</summary>
+internal sealed class EnqueueAttemptCounter
+{
+    private int attempts;
+
+    public int Next() => Interlocked.Increment(ref attempts);
+}
+
+/// <summary>The real durable Outbox, with the first enqueue of a test deliberately failing.</summary>
+internal sealed class FirstAttemptFailingOutbox(
+    OutboundMessageQueue inner,
+    EnqueueAttemptCounter counter) : IOutboundMessageQueue
+{
+    public async Task<long> EnqueueAsync(
+        OutboundMessageRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (counter.Next() == 1)
+        {
+            throw new InvalidOperationException("The durable Outbox is unavailable for this attempt.");
+        }
+
+        return await inner.EnqueueAsync(request, cancellationToken);
     }
 }
 
@@ -46,7 +89,8 @@ internal static class ConversationsTestDoubles
 internal sealed record ConversationDoubles(
     StubAiNluClient Nlu,
     StubCatalogProductDetails Details,
-    StubConversationRenderer Renderer);
+    StubConversationRenderer Renderer,
+    StubCatalogSearch Search);
 
 internal sealed class FixedClock(DateTime utcNow) : TimeProvider
 {
@@ -57,19 +101,47 @@ internal sealed class FixedClock(DateTime utcNow) : TimeProvider
 
 internal sealed class StubAiNluClient(NluAnalysisResult analysis) : IAiNluClient
 {
+    private TaskCompletionSource? gate;
+    private TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public int CallCount { get; private set; }
 
     /// <summary>What the next call answers, so a test can change the customer's next message.</summary>
     public NluAnalysisResult Analysis { get; set; } = analysis;
 
-    public Task<NluAnalysisResult> AnalyzeAsync(
+    /// <summary>
+    /// When set, every analysis waits on this gate, so a test can interleave an operator action between
+    /// the interpretation of a message and the reply that would follow it. Setting it also arms
+    /// <see cref="Entered"/> for the next analysis.
+    /// </summary>
+    public TaskCompletionSource? Gate
+    {
+        get => gate;
+
+        set
+        {
+            gate = value;
+            entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
+    /// <summary>Completes once the analysis of the currently gated turn has really started.</summary>
+    public Task Entered => entered.Task;
+
+    public async Task<NluAnalysisResult> AnalyzeAsync(
         string message,
         NluConversationContext context,
         CancellationToken cancellationToken)
     {
         CallCount++;
+        entered.TrySetResult();
 
-        return Task.FromResult(Analysis);
+        if (gate is { } waiting)
+        {
+            await waiting.Task.WaitAsync(cancellationToken);
+        }
+
+        return Analysis;
     }
 }
 
@@ -77,16 +149,19 @@ internal sealed class StubCatalogSearch(
     IReadOnlyList<ProductRecommendation> results,
     string? knownModelCode) : ICatalogSearch
 {
+    /// <summary>The results of the next search, so a test can change what the catalogue offers.</summary>
+    public IReadOnlyList<ProductRecommendation> Results { get; set; } = results;
+
     public Task<IReadOnlyList<ProductRecommendation>> SearchAsync(
         ProductSearchQuery query,
-        CancellationToken cancellationToken = default) => Task.FromResult(results);
+        CancellationToken cancellationToken = default) => Task.FromResult(Results);
 
     public Task<ProductRecommendation?> FindByModelCodeAsync(
         string modelCode,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(
             knownModelCode is not null && string.Equals(knownModelCode, modelCode, StringComparison.Ordinal)
-                ? results.Count == 0 ? null : results[0]
+                ? Results.Count == 0 ? null : Results[0]
                 : null);
 }
 

@@ -6,12 +6,23 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure;
 
 /// <summary>
-/// The explicit mode-control seam. Releasing a conversation back to the assistant and closing one are
-/// requests an operator makes, never something a customer message can trigger, and a closed
-/// conversation is never reopened.
+/// The explicit mode-control seam. Taking a conversation over, releasing it back to the assistant and
+/// closing it are requests an operator makes, never something a customer message can trigger, and a
+/// closed conversation is never reopened. Every one of them runs inside the conversation's own
+/// final-operation lock, so it is ordered against the last authorization of an automatic reply: either
+/// the operator's new mode is committed first and the stale turn is suppressed, or the reply is durable
+/// first and the operator action applies to the conversation afterwards.
 /// </summary>
-internal sealed class ConversationModeControl(ConversationDbContext dbContext, TimeProvider clock) : IConversationModeControl
+internal sealed class ConversationModeControl(
+    ConversationDbContext dbContext,
+    ConversationOperationCoordinator coordinator,
+    TimeProvider clock) : IConversationModeControl
 {
+    public Task<ConversationModeChangeOutcome> TakeOverAsync(
+        long conversationId,
+        CancellationToken cancellationToken = default) =>
+        ChangeAsync(conversationId, ConversationModeRules.AfterTakeOver, cancellationToken);
+
     public Task<ConversationModeChangeOutcome> ReleaseToAiAsync(
         long conversationId,
         CancellationToken cancellationToken = default) =>
@@ -29,6 +40,10 @@ internal sealed class ConversationModeControl(ConversationDbContext dbContext, T
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(conversationId);
 
+        await using var operation = await coordinator.BeginAsync(conversationId, cancellationToken);
+
+        // The mode this decides on is the stored one, read under the conversation's lock, so the change
+        // cannot be based on a mode that an automatic turn is authorized on at the same time.
         var conversation = await dbContext.Conversations
             .FirstOrDefaultAsync(candidate => candidate.Id == conversationId, cancellationToken);
 
@@ -54,7 +69,8 @@ internal sealed class ConversationModeControl(ConversationDbContext dbContext, T
             conversation.ClosedAt = now;
         }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        // The commit writes the mode change and releases the conversation's lock together.
+        await operation.CommitAsync(cancellationToken);
 
         return ConversationModeChangeOutcome.Changed;
     }

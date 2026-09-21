@@ -81,13 +81,60 @@ public sealed class ConversationIntentRouterTests
         Assert.Equal([10, 11], route.Intent.ModelIds);
         Assert.Equal([21, 25], route.Intent.VariantIds);
 
-        // The shortlist is one-based in display order and the current reference is the first item.
-        Assert.Equal([1, 2], route.State.Shortlist.Select(entry => entry.Position));
-        Assert.Equal(10, route.State.LastModelId);
-        Assert.Equal(21, route.State.LastVariantId);
+        // The shortlist is one-based in display order and the current reference is the first item. It is
+        // the displayed state, so the conversation may only reference it once the reply showing it is
+        // durably stored.
+        Assert.Equal([1, 2], route.DisplayedState!.Shortlist.Select(entry => entry.Position));
+        Assert.Equal(10, route.DisplayedState.LastModelId);
+        Assert.Equal(21, route.DisplayedState.LastVariantId);
+
+        // The state stored as soon as the turn is accepted holds the customer's own filters and claims
+        // nothing about a list that was not shown yet.
+        Assert.Empty(route.State.Shortlist);
+        Assert.Null(route.State.LastModelId);
+        Assert.Null(route.State.LastVariantId);
         Assert.Equal("ProductSearch", route.State.LastIntent);
         Assert.Equal(BudgetType.Soft, route.State.LastFilters!.BudgetType);
         Assert.Equal(3000, route.State.LastFilters.BudgetTarget);
+    }
+
+    [Fact]
+    public async Task A_search_keeps_the_list_the_customer_already_saw_until_the_new_reply_is_durable()
+    {
+        var harness = new RouterHarness();
+        harness.Search.Results =
+        [
+            ConversationSamples.Recommendation(10, 21),
+            ConversationSamples.Recommendation(11, 25),
+        ];
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            state: StateWithShortlist((5, 51), (6, 61)));
+
+        // Until the new reply is durable, the conversation still references what it really showed.
+        Assert.Equal([5, 6], route.State.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(5, route.State.LastModelId);
+        Assert.Equal(51, route.State.LastVariantId);
+
+        // The new list travels as the displayed state.
+        Assert.Equal([10, 11], route.DisplayedState!.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(10, route.DisplayedState.LastModelId);
+    }
+
+    [Fact]
+    public async Task A_search_that_finds_nothing_displays_nothing_and_keeps_the_previous_list()
+    {
+        var harness = new RouterHarness();
+        harness.Search.Results = [];
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductSearch,
+            state: StateWithShortlist((5, 51)));
+
+        Assert.Null(route.DisplayedState);
+        Assert.Equal([5], route.State.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(5, route.State.LastModelId);
     }
 
     [Fact]
@@ -276,6 +323,73 @@ public sealed class ConversationIntentRouterTests
         Assert.Equal(["P2419H"], harness.Search.LookedUpModelCodes);
         Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
         Assert.Equal(ConversationReasonCodes.ModelCodeNotAvailable, route.Intent.ReasonCode);
+    }
+
+    [Fact]
+    public async Task An_exact_model_code_that_is_unknown_clears_the_current_reference()
+    {
+        var harness = new RouterHarness();
+        harness.Search.ModelCodeResult = null;
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductDetails,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductDetails, modelCode: "X9999"),
+            // The conversation currently references the first product of a list the customer saw.
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
+        Assert.Equal(ConversationReasonCodes.ModelCodeNotAvailable, route.Intent.ReasonCode);
+
+        // The named product does not exist, so the conversation may not keep answering about the
+        // product it used to reference: the pair is cleared together.
+        Assert.Null(route.State.LastModelId);
+        Assert.Null(route.State.LastVariantId);
+
+        // The list the customer was already shown stays addressable by its position.
+        Assert.Equal([10, 11], route.State.Shortlist.Select(entry => entry.ModelId));
+    }
+
+    [Fact]
+    public async Task An_unqualified_price_question_after_an_exact_model_code_miss_asks_instead_of_answering_the_old_product()
+    {
+        var harness = new RouterHarness();
+        harness.Search.ModelCodeResult = null;
+
+        var miss = await harness.RouteAsync(
+            NluIntent.ProductDetails,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductDetails, modelCode: "X9999"),
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        var followUp = await harness.RouteAsync(
+            NluIntent.PriceCheck,
+            interpretation: ConversationSamples.Interpretation(NluIntent.PriceCheck),
+            state: miss.State);
+
+        Assert.Equal(ConversationResponseKind.Clarification, followUp.Intent.Kind);
+        Assert.Equal(ConversationReferenceReasons.CurrentReferenceMissing, followUp.Intent.ReasonCode);
+        Assert.NotEqual(ConversationResponseKind.Price, followUp.Intent.Kind);
+    }
+
+    [Fact]
+    public async Task An_explicit_position_after_an_exact_model_code_miss_still_resolves_the_shown_list()
+    {
+        var harness = new RouterHarness();
+        harness.Search.ModelCodeResult = null;
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        var miss = await harness.RouteAsync(
+            NluIntent.ProductDetails,
+            interpretation: ConversationSamples.Interpretation(NluIntent.ProductDetails, modelCode: "X9999"),
+            state: StateWithShortlist((10, 21), (11, 25)));
+
+        var followUp = await harness.RouteAsync(
+            NluIntent.PriceCheck,
+            interpretation: ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "second"),
+            state: miss.State);
+
+        Assert.Equal(ConversationResponseKind.Price, followUp.Intent.Kind);
+        Assert.Equal(11, followUp.Intent.ModelId);
+        Assert.Equal(25, followUp.Intent.VariantId);
     }
 
     [Fact]

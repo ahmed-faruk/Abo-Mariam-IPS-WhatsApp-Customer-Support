@@ -20,6 +20,9 @@ internal sealed class TestClock(DateTime utcNow) : TimeProvider
 /// <summary>The Conversations persistence of one turn, kept in memory so orchestration is testable.</summary>
 internal sealed class FakeConversationTurnStore : IConversationTurnStore
 {
+    /// <summary>The order the turn touched its collaborators, so durability ordering is observable.</summary>
+    public List<string> Journal { get; init; } = [];
+
     public long CustomerId { get; set; } = 1;
 
     public long ConversationId { get; set; } = 7;
@@ -60,6 +63,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         DateTime utcNow,
         CancellationToken cancellationToken)
     {
+        Journal.Add("store:open-turn");
         OpenedCustomerExternalId = customerExternalId;
         OpenedKnownConversationId = knownConversationId;
 
@@ -79,12 +83,22 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         Task.FromResult(
             StoredStateJson is null ? State : ConversationStateDocument.Deserialize(StoredStateJson));
 
+    public Task<IConversationOperation> BeginFinalOperationAsync(
+        long conversationId,
+        CancellationToken cancellationToken)
+    {
+        Journal.Add("store:begin-final-operation");
+
+        return Task.FromResult<IConversationOperation>(new FakeConversationOperation(this, Journal));
+    }
+
     public Task AcceptInboundAsync(
         ConversationTurnContext context,
         DateTime providerTimestampUtc,
         DateTime utcNow,
         CancellationToken cancellationToken)
     {
+        Journal.Add("store:accept-inbound");
         AcceptedProviderTimestamp = providerTimestampUtc;
         AcceptedAt = utcNow;
         context.WindowExpiresAt = ConversationWindowPolicy.Refresh(providerTimestampUtc);
@@ -99,6 +113,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         DateTime utcNow,
         CancellationToken cancellationToken)
     {
+        Journal.Add("store:save-state");
         State = state;
         StateWriteCount++;
 
@@ -111,6 +126,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         DateTime utcNow,
         CancellationToken cancellationToken)
     {
+        Journal.Add($"store:set-mode:{mode}");
         Mode = mode;
         context.Mode = mode;
         ModeChangeCount++;
@@ -120,6 +136,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
 
     public Task CommitAsync(CancellationToken cancellationToken)
     {
+        Journal.Add("store:commit");
         CommitCount++;
 
         return Task.CompletedTask;
@@ -127,16 +144,51 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
 
     public Task RecordOutboundAsync(long conversationId, DateTime utcNow, CancellationToken cancellationToken)
     {
+        Journal.Add("store:record-outbound");
         LastOutboundRecordedAt = utcNow;
         OutboundRecordCount++;
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// The serialized final section of one turn. The real operation takes a PostgreSQL lock that orders
+    /// it against the operator's mode changes; here the same decision is observable through the journal:
+    /// the mode is read again as it is stored now, and the commit releases the section.
+    /// </summary>
+    private sealed class FakeConversationOperation(
+        FakeConversationTurnStore store,
+        List<string> journal) : IConversationOperation
+    {
+        public Task<string> ReloadModeAsync(CancellationToken cancellationToken)
+        {
+            journal.Add("store:reload-mode");
+
+            return Task.FromResult(store.Mode);
+        }
+
+        public Task CommitAsync(CancellationToken cancellationToken)
+        {
+            journal.Add("store:commit-final-operation");
+            store.CommitCount++;
+
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            journal.Add("store:release-final-operation");
+
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
 /// <summary>A renderer that records the intents it was asked for and returns a fixed body.</summary>
 internal sealed class FakeConversationRenderer : IConversationRenderer
 {
+    public List<string> Journal { get; init; } = [];
+
     public List<ConversationResponseIntent> Intents { get; } = [];
 
     public string? Body { get; set; } = "the rendered reply";
@@ -145,6 +197,7 @@ internal sealed class FakeConversationRenderer : IConversationRenderer
         ConversationResponseIntent intent,
         CancellationToken cancellationToken = default)
     {
+        Journal.Add("renderer:render");
         Intents.Add(intent);
 
         return Task.FromResult(
@@ -155,6 +208,8 @@ internal sealed class FakeConversationRenderer : IConversationRenderer
 /// <summary>Records every durable outbound intent the orchestration asks for.</summary>
 internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
 {
+    public List<string> Journal { get; init; } = [];
+
     public List<OutboundMessageRequest> Requests { get; } = [];
 
     public long NextMessageId { get; set; } = 501;
@@ -165,6 +220,7 @@ internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
         OutboundMessageRequest request,
         CancellationToken cancellationToken = default)
     {
+        Journal.Add("outbox:enqueue");
         Requests.Add(request);
 
         return Fails

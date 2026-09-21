@@ -67,4 +67,16 @@ public sealed class BusinessInfoScopeTests
             BusinessInfoScope.ResolveKeys("مواعيدكم إيه والعنوان فين؟"),
             BusinessInfoScope.ResolveKeys("العنوان فين ومواعيدكم إيه؟"));
     }
+
+    [Theory]
+    [InlineData("هل توجد إمكانية الدفع بالفيزا؟", BusinessInfoKeyNames.PaymentMethods)]
+    [InlineData("إمكانية الدفع", BusinessInfoKeyNames.PaymentMethods)]
+    [InlineData("فين المكان؟", BusinessInfoKeyNames.Address)]
+    [InlineData("المكان فين؟", BusinessInfoKeyNames.Address)]
+    public void An_arabic_alias_never_matches_inside_an_unrelated_word(string text, string expectedKey)
+    {
+        // "مكان" is an address alias, and "إمكانية" merely contains those letters. The address concept
+        // is therefore not named by a payment question, and the question stays unambiguous.
+        Assert.Equal([expectedKey], BusinessInfoScope.ResolveKeys(text));
+    }
 }

@@ -11,7 +11,9 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persiste
 /// PostgreSQL conflict handling instead of a read-then-write, so two concurrent turns of the same
 /// customer converge on one customer row and one active conversation row and then share them.
 /// </summary>
-internal sealed class ConversationTurnStore(ConversationDbContext dbContext) : IConversationTurnStore
+internal sealed class ConversationTurnStore(
+    ConversationDbContext dbContext,
+    ConversationOperationCoordinator coordinator) : IConversationTurnStore
 {
     // The customer is identified by their WhatsApp number, which is unique, so a losing racer simply
     // keeps the row the winner inserted.
@@ -80,6 +82,11 @@ internal sealed class ConversationTurnStore(ConversationDbContext dbContext) : I
 
         return ConversationStateDocument.Deserialize(state.StateJson);
     }
+
+    public Task<IConversationOperation> BeginFinalOperationAsync(
+        long conversationId,
+        CancellationToken cancellationToken) =>
+        coordinator.BeginAsync(conversationId, cancellationToken);
 
     public async Task AcceptInboundAsync(
         ConversationTurnContext context,

@@ -10,8 +10,25 @@ public static class ConversationModeRules
     public static bool AnswersAutomatically(string mode) =>
         string.Equals(mode, ConversationModes.Ai, StringComparison.Ordinal);
 
-    /// <summary>A human handoff always ends in Human mode, whether the turn was automatic or already held.</summary>
-    public static string AfterHandoff(string currentMode) => ConversationModes.Human;
+    /// <summary>
+    /// The mode a customer-requested handoff leaves behind, or null when it cannot apply. A handoff
+    /// ends in Human mode whether the turn was automatic or already held, but it never reopens a
+    /// conversation an operator closed while the turn was still running.
+    /// </summary>
+    public static string? AfterHandoff(string currentMode) =>
+        string.Equals(currentMode, ConversationModes.Closed, StringComparison.Ordinal)
+            ? null
+            : ConversationModes.Human;
+
+    /// <summary>
+    /// The mode an explicit operator takeover leaves behind, or null when it cannot apply. Taking over
+    /// an AI conversation makes a human the owner; taking over a conversation a human already owns is
+    /// a no-op, and a closed conversation stays historical.
+    /// </summary>
+    public static string? AfterTakeOver(string currentMode) =>
+        string.Equals(currentMode, ConversationModes.Closed, StringComparison.Ordinal)
+            ? null
+            : ConversationModes.Human;
 
     /// <summary>
     /// The mode after an explicit release request, or null when the request cannot apply. A closed

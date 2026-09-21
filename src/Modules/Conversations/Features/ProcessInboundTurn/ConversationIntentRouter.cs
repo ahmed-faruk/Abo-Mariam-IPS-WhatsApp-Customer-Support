@@ -93,6 +93,10 @@ internal sealed class ConversationIntentRouter(
     /// it does not name is retained, so "Dell 24" followed by "IPS with HDMI" searches for all four. An
     /// empty result set is a deterministic no-match against the effective filters, never a fallback to
     /// something above a hard ceiling or a silently relaxed filter.
+    /// The effective filters are the customer's own words and are stored as soon as the turn is accepted.
+    /// The result list is not: a shortlist becomes addressable only once the reply that showed it is
+    /// durably stored, so a search whose answer never reaches the customer - a closed service window, an
+    /// unbound renderer, a failed enqueue - cannot leave a list behind that the customer never saw.
     /// </summary>
     private async Task<ConversationRoute> SearchAsync(
         long conversationId,
@@ -113,16 +117,14 @@ internal sealed class ConversationIntentRouter(
 
         var next = state with
         {
-            Shortlist = ConversationStateDocument.BuildShortlist(
-                results.Select(result => (result.ModelId, result.VariantId))),
-            LastModelId = results.Count == 0 ? null : results[0].ModelId,
-            LastVariantId = results.Count == 0 ? null : results[0].VariantId,
             LastIntent = ProductSearchIntent,
             LastFilters = filters,
         };
 
         if (results.Count == 0)
         {
+            // Nothing matched, so nothing new was displayed; the list the customer was last shown stays
+            // the last displayed list.
             return new ConversationRoute(
                 Reply(
                     conversationId,
@@ -132,10 +134,19 @@ internal sealed class ConversationIntentRouter(
                 next);
         }
 
+        var displayed = next with
+        {
+            Shortlist = ConversationStateDocument.BuildShortlist(
+                results.Select(result => (result.ModelId, result.VariantId))),
+            LastModelId = results[0].ModelId,
+            LastVariantId = results[0].VariantId,
+        };
+
         return new ConversationRoute(
             Reply(conversationId, customerExternalId, ConversationResponseKind.ProductSearchResults)
                 .WithCandidates(results.Select(result => (result.ModelId, result.VariantId))),
-            next);
+            next,
+            displayed);
     }
 
     /// <summary>
@@ -158,12 +169,22 @@ internal sealed class ConversationIntentRouter(
         // there the application does not know which product was meant, so it asks.
         if (reasonCode == ConversationReasonCodes.ModelCodeNotAvailable)
         {
-            return NoMatch(
-                conversationId,
-                customerExternalId,
-                state,
-                interpretation,
-                ConversationReasonCodes.ModelCodeNotAvailable);
+            // The customer named one exact product and the catalogue does not hold it. The current
+            // reference goes with the product it named: an unqualified follow-up such as "سعرها؟" must
+            // ask which product is meant instead of silently answering about the previously referenced
+            // one. The list the customer was already shown stays available by position.
+            return new ConversationRoute(
+                Reply(
+                    conversationId,
+                    customerExternalId,
+                    ConversationResponseKind.NoMatch,
+                    ConversationReasonCodes.ModelCodeNotAvailable),
+                state with
+                {
+                    LastModelId = null,
+                    LastVariantId = null,
+                    LastIntent = interpretation.Intent.ToString(),
+                });
         }
 
         if (reasonCode is not null)

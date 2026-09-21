@@ -27,6 +27,9 @@ public static class ConversationsModuleRegistration
         services.AddConversationPersistence(connectionString);
         services.TryAddSingleton(TimeProvider.System);
 
+        // One coordinator per scope, shared by the turn store and the mode-control seam, so both
+        // serialize on the same PostgreSQL conversation lock.
+        services.AddScoped<ConversationOperationCoordinator>();
         services.AddScoped<IConversationTurnStore, ConversationTurnStore>();
         services.AddScoped<ConversationIntentRouter>();
         services.AddScoped<IProcessInboundTurn, ProcessInboundTurnHandler>();

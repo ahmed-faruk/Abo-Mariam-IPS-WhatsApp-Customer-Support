@@ -115,8 +115,11 @@ public static class BusinessInfoScope
     };
 
     /// <summary>
-    /// Latin keywords have to sit on word boundaries, so "open" cannot match inside "openssl".
-    /// Arabic keywords match as substrings, because Arabic attaches prefixes and suffixes directly.
+    /// Latin keywords have to sit on word boundaries, so "open" cannot match inside "openssl". Arabic
+    /// keywords match inside their own word, because Arabic writes the definite article, short
+    /// prepositions and pronoun suffixes attached to the word: "المكان", "فيزا" and "مواعيدكم" are the
+    /// same concepts as "مكان" and "مواعيد". A keyword is never matched in the middle of a stem that is
+    /// a different word, which is what keeps the address alias "مكان" out of "إمكانية".
     /// </summary>
     private static bool Contains(string haystack, string keyword)
     {
@@ -127,18 +130,28 @@ public static class BusinessInfoScope
             return false;
         }
 
+        return IsLatin(normalizedKeyword)
+            ? ContainsWord(haystack, normalizedKeyword)
+            : ContainsArabicWord(haystack, normalizedKeyword);
+    }
+
+    private static bool IsLatin(string value) => value.All(character => character < '\u0080');
+
+    /// <summary>A Latin keyword only counts when the whole word around it is that keyword.</summary>
+    private static bool ContainsWord(string haystack, string keyword)
+    {
         var searchFrom = 0;
 
         while (true)
         {
-            var found = haystack.IndexOf(normalizedKeyword, searchFrom, StringComparison.Ordinal);
+            var found = haystack.IndexOf(keyword, searchFrom, StringComparison.Ordinal);
 
             if (found < 0)
             {
                 return false;
             }
 
-            if (!IsLatin(normalizedKeyword) || HasBoundaries(haystack, found, normalizedKeyword.Length))
+            if (HasBoundaries(haystack, found, keyword.Length))
             {
                 return true;
             }
@@ -147,7 +160,56 @@ public static class BusinessInfoScope
         }
     }
 
-    private static bool IsLatin(string value) => value.All(character => character < '\u0080');
+    /// <summary>
+    /// The spellings Arabic may attach in front of a keyword: the definite article, the short
+    /// prepositions and their combinations. A word whose stem merely contains the keyword's letters is
+    /// not a match, because the letters in front of it are its own stem rather than one of these
+    /// prefixes: "إمكانية" normalizes to "امكانيه", whose leading "ا" is not in this list.
+    /// </summary>
+    private static readonly string[] ArabicPrefixes =
+    [
+        string.Empty, "ال", "و", "ف", "ب", "ك", "ل", "لل", "بال", "وال", "فال", "كال", "بل", "ولل", "فالل", "بالل",
+    ];
+
+    private static bool ContainsArabicWord(string haystack, string keyword)
+    {
+        foreach (var word in haystack.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var searchFrom = 0;
+
+            while (true)
+            {
+                var found = word.IndexOf(keyword, searchFrom, StringComparison.Ordinal);
+
+                if (found < 0)
+                {
+                    break;
+                }
+
+                if (IsAllowedPrefix(word.AsSpan(0, found)))
+                {
+                    return true;
+                }
+
+                searchFrom = found + 1;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsAllowedPrefix(ReadOnlySpan<char> prefix)
+    {
+        foreach (var allowed in ArabicPrefixes)
+        {
+            if (prefix.SequenceEqual(allowed))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool HasBoundaries(string haystack, int start, int length)
     {

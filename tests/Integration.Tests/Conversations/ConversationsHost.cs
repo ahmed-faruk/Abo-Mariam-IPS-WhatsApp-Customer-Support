@@ -16,7 +16,8 @@ internal sealed class ConversationsHost(ServiceProvider provider) : IAsyncDispos
 
     public static ConversationsHost Start(
         string connectionString,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        Action<IServiceCollection>? overrideServices = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -25,6 +26,10 @@ internal sealed class ConversationsHost(ServiceProvider provider) : IAsyncDispos
 
         services.AddMessagingModule(connectionString);
         services.AddConversationsModule(connectionString);
+
+        // A test that has to replace a registration the modules own, such as the durable Outbox itself,
+        // does it here: the last registration of a service wins.
+        overrideServices?.Invoke(services);
 
         return new ConversationsHost(services.BuildServiceProvider());
     }

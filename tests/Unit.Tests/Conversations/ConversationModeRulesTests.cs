@@ -61,6 +61,31 @@ public sealed class ConversationModeRulesTests
     }
 
     [Fact]
+    public void An_operator_takeover_moves_an_ai_conversation_to_human()
+    {
+        Assert.Equal(ConversationModes.Human, ConversationModeRules.AfterTakeOver(ConversationModes.Ai));
+    }
+
+    [Fact]
+    public void An_operator_takeover_leaves_an_already_human_conversation_unchanged()
+    {
+        Assert.Equal(ConversationModes.Human, ConversationModeRules.AfterTakeOver(ConversationModes.Human));
+    }
+
+    [Fact]
+    public void An_operator_takeover_never_reopens_a_closed_conversation()
+    {
+        Assert.Null(ConversationModeRules.AfterTakeOver(ConversationModes.Closed));
+    }
+
+    [Fact]
+    public void A_close_wins_over_every_automatic_handoff()
+    {
+        // Closing is terminal, so an in-flight handoff may never turn a closed conversation back on.
+        Assert.Null(ConversationModeRules.AfterHandoff(ConversationModes.Closed));
+    }
+
+    [Fact]
     public void Closing_moves_ai_and_human_to_closed()
     {
         Assert.Equal(ConversationModes.Closed, ConversationModeRules.AfterClose(ConversationModes.Ai));
