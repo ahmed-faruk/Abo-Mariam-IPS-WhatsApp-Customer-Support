@@ -348,6 +348,24 @@ public sealed class ProcessInboundTurnTests
     }
 
     [Fact]
+    public async Task A_persisted_current_reference_with_a_non_positive_id_is_never_used_as_the_current_product()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "this")));
+        harness.Store.StoredStateJson = """{"lastModelId":0,"lastVariantId":-1}""";
+
+        var result = await harness.ProcessAsync(ConversationSamples.Text());
+
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+
+        var intent = Assert.Single(harness.Renderer.Intents);
+
+        Assert.Equal(ConversationResponseKind.Clarification, intent.Kind);
+        Assert.Equal(ConversationReferenceReasons.CurrentReferenceMissing, intent.ReasonCode);
+        Assert.DoesNotContain(ConversationResponseKind.Price, harness.Renderer.Intents.Select(recorded => recorded.Kind));
+    }
+
+    [Fact]
     public async Task An_ambiguous_business_info_question_asks_instead_of_answering_one_concept()
     {
         var harness = Harness.Start(NluAnalysisResult.Success(

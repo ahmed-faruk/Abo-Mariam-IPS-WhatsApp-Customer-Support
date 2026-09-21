@@ -160,6 +160,16 @@ public sealed record ConversationStateDocument
             return false;
         }
 
+        // The current reference is one pair of identifiers: either the conversation has no current
+        // reference at all, or both ids name a product. Half a pair, or an id this application could
+        // never have written, would let "this one" resolve to a product the customer never saw.
+        if ((LastModelId is null) != (LastVariantId is null)
+            || LastModelId is <= 0
+            || LastVariantId is <= 0)
+        {
+            return false;
+        }
+
         var ordered = Shortlist.OrderBy(entry => entry.Position).ToList();
         var seenModels = new HashSet<long>();
 

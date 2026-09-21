@@ -110,6 +110,18 @@ public sealed class ConversationStateDocumentTests
     [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":-1}]}""")]
     [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":21},{"position":2,"modelId":10,"variantId":99}]}""")]
     [InlineData("""{"shortlist":[{"position":"first","modelId":10,"variantId":21}]}""")]
+    // The current reference is one pair of identifiers: either the conversation has no current
+    // reference, or both ids name a product. Half a pair or a non-positive id was not written by
+    // this application and would resolve "this one" to a product the customer never saw.
+    [InlineData("""{"lastModelId":0,"lastVariantId":5}""")]
+    [InlineData("""{"lastModelId":5,"lastVariantId":0}""")]
+    [InlineData("""{"lastModelId":-1,"lastVariantId":5}""")]
+    [InlineData("""{"lastModelId":5,"lastVariantId":-1}""")]
+    [InlineData("""{"lastModelId":null,"lastVariantId":5}""")]
+    [InlineData("""{"lastModelId":5,"lastVariantId":null}""")]
+    [InlineData("""{"lastModelId":0,"lastVariantId":0}""")]
+    [InlineData("""{"lastModelId":-1,"lastVariantId":-1}""")]
+    [InlineData("""{"shortlist":[{"position":1,"modelId":10,"variantId":21}],"lastModelId":10,"lastVariantId":-1}""")]
     // A stored budget that contradicts its own type could silently widen a later search, so it is
     // rejected as well.
     [InlineData("""{"lastFilters":{"budgetType":0,"budgetTarget":2500}}""")]
@@ -121,6 +133,50 @@ public sealed class ConversationStateDocumentTests
     public void A_structurally_invalid_stored_document_is_read_as_empty(string json)
     {
         Assert.Equal(ConversationStateDocument.Empty, ConversationStateDocument.Deserialize(json));
+    }
+
+    [Theory]
+    // No current reference at all is a valid state, and so is one complete positive pair.
+    [InlineData(null, null)]
+    [InlineData(10L, 21L)]
+    public void A_current_reference_pair_is_valid_when_both_ids_are_absent_or_both_positive(
+        long? modelId,
+        long? variantId)
+    {
+        var document = ConversationStateDocument.Empty with
+        {
+            Shortlist = ConversationStateDocument.BuildShortlist([(10, 21)]),
+            LastModelId = modelId,
+            LastVariantId = variantId,
+        };
+
+        var reloaded = ConversationStateDocument.Deserialize(document.ToJson());
+
+        Assert.Equal(modelId, reloaded.LastModelId);
+        Assert.Equal(variantId, reloaded.LastVariantId);
+        Assert.Single(reloaded.Shortlist);
+    }
+
+    [Theory]
+    [InlineData(0L, 5L)]
+    [InlineData(5L, 0L)]
+    [InlineData(-1L, 5L)]
+    [InlineData(5L, -1L)]
+    [InlineData(null, 5L)]
+    [InlineData(5L, null)]
+    [InlineData(0L, 0L)]
+    [InlineData(-1L, -1L)]
+    public void A_half_or_non_positive_current_reference_pair_round_trips_as_empty(
+        long? modelId,
+        long? variantId)
+    {
+        var document = ConversationStateDocument.Empty with
+        {
+            LastModelId = modelId,
+            LastVariantId = variantId,
+        };
+
+        Assert.Equal(ConversationStateDocument.Empty, ConversationStateDocument.Deserialize(document.ToJson()));
     }
 
     [Fact]
