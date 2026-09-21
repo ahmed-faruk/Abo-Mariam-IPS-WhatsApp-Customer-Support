@@ -11,9 +11,9 @@ namespace WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure.Ollama;
 /// <see cref="HttpClient"/> is registered with an infinite timeout so this class can tell the two
 /// cancellations apart — the caller's token is rethrown, while the configured AI timeout becomes an
 /// outcome the caller maps to the safe fallback of docs/TECHNICAL.md section 30. A structured-NLU
-/// envelope is tiny, so the response is read through a fixed size cap: a runtime that streams megabytes
-/// must not become an allocation here, and an oversized body is an unusable envelope rather than a
-/// model reply that could be corrected.
+/// envelope is tiny, so the response headers are read first and the body is then read through a fixed
+/// size cap: a runtime that streams megabytes must not become an allocation here, and an oversized body
+/// is an unusable envelope rather than a model reply that could be corrected.
 /// </summary>
 public sealed class OllamaChatTransport : IOllamaChatTransport
 {
@@ -58,7 +58,13 @@ public sealed class OllamaChatTransport : IOllamaChatTransport
         try
         {
             using var body = new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json");
-            response = await _httpClient.PostAsync(ChatPath, body, timeout.Token).ConfigureAwait(false);
+            using var message = new HttpRequestMessage(HttpMethod.Post, ChatPath) { Content = body };
+
+            // ResponseHeadersRead keeps the envelope out of HttpClient's own buffer, so the byte cap below
+            // examines the stream itself instead of a copy that was already allocated in full.
+            response = await _httpClient
+                .SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -85,6 +91,20 @@ public sealed class OllamaChatTransport : IOllamaChatTransport
 
         using (response)
         {
+            // The announced length alone can rule out a structured NLU envelope, so an oversized body is
+            // rejected from its headers and never read at all.
+            if (response.Content.Headers.ContentLength is { } announcedLength
+                && announcedLength > MaxResponseBytes)
+            {
+                _logger.LogWarning(
+                    "The Ollama chat response from /{Endpoint} announced {ByteCount} bytes, which exceeds "
+                    + "the maximum envelope size.",
+                    ChatPath,
+                    announcedLength);
+
+                return OllamaChatTransportResult.Unavailable();
+            }
+
             string payload;
 
             try
@@ -119,6 +139,17 @@ public sealed class OllamaChatTransport : IOllamaChatTransport
                     "The Ollama chat response from /{Endpoint} was unusable ({FailureKind}).",
                     ChatPath,
                     exception.GetType().Name);
+
+                return OllamaChatTransportResult.Unavailable();
+            }
+            catch (IOException exception)
+            {
+                // A reset connection ends the read the same way an unreachable runtime ends the send:
+                // neither is a model reply, so neither may be corrected and retried.
+                _logger.LogWarning(
+                    exception,
+                    "Reading the Ollama chat response from /{Endpoint} failed.",
+                    ChatPath);
 
                 return OllamaChatTransportResult.Unavailable();
             }

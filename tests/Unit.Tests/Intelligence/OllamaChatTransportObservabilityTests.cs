@@ -52,6 +52,24 @@ public sealed class OllamaChatTransportObservabilityTests
     }
 
     [Fact]
+    public async Task A_response_read_failure_keeps_the_safe_outcome_and_logs_the_exception()
+    {
+        var logger = new CapturingLogger();
+        var handler = new ScriptedHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new FaultingStream(new IOException("the socket was reset"))),
+        }));
+        var transport = CreateTransport(logger, handler);
+
+        var result = await transport.SendAsync(EmptyRequest(CustomerMessage), CancellationToken.None);
+
+        Assert.Equal(OllamaChatOutcome.Unavailable, result.Outcome);
+        Assert.Null(result.Content);
+        Assert.Contains(logger.Entries, entry => entry.Contains(nameof(IOException), StringComparison.Ordinal));
+        AssertSafetyInvariants(logger);
+    }
+
+    [Fact]
     public async Task A_usable_reply_is_returned_and_its_content_is_never_logged()
     {
         var logger = new CapturingLogger();
@@ -135,6 +153,40 @@ public sealed class OllamaChatTransportObservabilityTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) => response(request);
+    }
+
+    /// <summary>A response body that fails on its first read, as a reset connection does.</summary>
+    private sealed class FaultingStream(Exception failure) : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw failure;
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) => ValueTask.FromException<int>(failure);
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>Records what an operator would see, including the exception a structured log carries.</summary>

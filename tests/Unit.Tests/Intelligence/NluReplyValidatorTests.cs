@@ -586,6 +586,68 @@ public sealed class NluReplyValidatorTests
                 StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Thousands_of_unknown_fields_are_dropped_at_the_retained_limit()
+    {
+        var reply = Reply();
+
+        for (var index = 0; index < 5_000; index++)
+        {
+            reply[$"hostile{index}"] = "anything";
+        }
+
+        var validation = NluReplyValidator.Validate(Json(reply));
+
+        Assert.False(validation.IsValid);
+        Assert.Equal(NluDiagnostics.MaxRetainedProblems + 1, validation.Problems.Count);
+        Assert.Contains(
+            validation.Problems,
+            problem => problem.StartsWith("$.hostile0:", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            validation.Problems,
+            problem => problem.Contains("$.hostile4000", StringComparison.Ordinal));
+        Assert.Single(
+            validation.Problems,
+            problem => string.Equals(
+                problem,
+                NluDiagnostics.OmittedProblemsSummary,
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Mixed_failures_stay_bounded_and_end_with_one_omission_summary()
+    {
+        var reply = Reply();
+        reply["sizeInches"] = "twenty-four";
+        reply["budgetType"] = "Range";
+        reply["budgetMin"] = 5000;
+        reply["budgetMax"] = 4000;
+        reply["requiredPorts"] = new JsonArray(1, 2, 3, 4);
+
+        for (var index = 0; index < 500; index++)
+        {
+            reply[$"extra{index}"] = index;
+        }
+
+        var content = Json(reply).Replace(
+            "\"brand\":null",
+            "\"brand\":null,\"brand\":null",
+            StringComparison.Ordinal);
+
+        var validation = NluReplyValidator.Validate(content);
+
+        Assert.False(validation.IsValid);
+        Assert.True(validation.Problems.Count <= NluDiagnostics.MaxRetainedProblems + 1);
+        Assert.Equal(NluDiagnostics.OmittedProblemsSummary, validation.Problems[^1]);
+        Assert.Single(
+            validation.Problems,
+            problem => string.Equals(
+                problem,
+                NluDiagnostics.OmittedProblemsSummary,
+                StringComparison.Ordinal));
+        Assert.All(validation.Problems, problem => Assert.True(problem.Length <= NluDiagnostics.MaxProblemLength));
+    }
+
     private static JsonObject Reply() => new()
     {
         ["intent"] = "ProductSearch",

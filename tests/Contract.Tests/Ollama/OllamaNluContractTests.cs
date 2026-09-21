@@ -281,11 +281,13 @@ public sealed class OllamaNluContractTests
     public async Task An_oversized_response_body_maps_to_ai_unavailable_without_a_schema_retry()
     {
         var (client, handler) = CreateClient();
+        var endless = new EndlessStream();
 
         handler
             .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StreamContent(new EndlessStream()),
+                // No declared length at all, so only the adapter's own byte cap can stop the read.
+                Content = new StreamContent(endless),
             })
             .ThenJson(ValidReply);
 
@@ -293,22 +295,76 @@ public sealed class OllamaNluContractTests
 
         Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
         Assert.Equal(1, handler.Attempts);
+        Assert.InRange(endless.BytesRead, 1, OllamaChatTransport.MaxResponseBytes + 4096);
     }
 
     [Fact]
-    public async Task An_oversized_content_length_header_is_rejected_before_the_body_is_buffered()
+    public async Task An_oversized_content_length_header_is_rejected_before_the_body_is_read()
+    {
+        var (client, handler) = CreateClient();
+        var content = new UnreadableContent(OllamaChatTransport.MaxResponseBytes + 1);
+
+        handler
+            .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = content })
+            .ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.False(result.RequiresClarification);
+        Assert.Equal(1, handler.Attempts);
+        Assert.False(content.WasRead);
+    }
+
+    [Fact]
+    public async Task A_body_that_outgrows_its_declared_length_is_rejected_without_a_schema_retry()
+    {
+        var (client, handler) = CreateClient();
+        var content = new UnderstatedLengthContent(OllamaChatTransport.MaxResponseBytes + 8192);
+
+        handler
+            .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = content })
+            .ThenJson(ValidReply);
+
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.Equal(1, handler.Attempts);
+        Assert.True(
+            content.Written > OllamaChatTransport.MaxResponseBytes,
+            "The body must have carried more than the declared length, so the announced length was not trusted.");
+    }
+
+    [Fact]
+    public async Task An_io_failure_while_reading_the_body_maps_to_ai_unavailable()
     {
         var (client, handler) = CreateClient();
 
         handler
-            .ThenResponse(_ =>
+            .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK)
             {
-                // The announced length alone proves the envelope cannot be a structured NLU reply, so
-                // the adapter never has to read the body to reject it.
-                var content = new ByteArrayContent([1, 2, 3]);
-                content.Headers.ContentLength = OllamaChatTransport.MaxResponseBytes + 1;
+                Content = new StreamContent(new FaultingStream(new IOException("the connection was reset"))),
+            })
+            .ThenJson(ValidReply);
 
-                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        var result = await client.AnalyzeAsync(UserMessage, NluConversationContext.Empty, CancellationToken.None);
+
+        Assert.Equal(NluAnalysisStatus.AiUnavailable, result.Status);
+        Assert.False(result.RequiresClarification);
+        Assert.Null(result.Interpretation);
+        Assert.Equal(1, handler.Attempts);
+    }
+
+    [Fact]
+    public async Task An_http_io_failure_while_reading_the_body_maps_to_ai_unavailable()
+    {
+        var (client, handler) = CreateClient();
+
+        handler
+            .ThenResponse(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(
+                    new FaultingStream(new HttpIOException(HttpRequestError.ResponseEnded, "the response ended"))),
             })
             .ThenJson(ValidReply);
 
@@ -448,6 +504,9 @@ public sealed class OllamaNluContractTests
     /// <summary>A body with no end, so only the adapter's own response-size bound can stop the read.</summary>
     private sealed class EndlessStream : Stream
     {
+        /// <summary>How many bytes the adapter actually pulled, so a test can prove the read stopped early.</summary>
+        public long BytesRead { get; private set; }
+
         public override bool CanRead => true;
 
         public override bool CanSeek => false;
@@ -466,6 +525,8 @@ public sealed class OllamaNluContractTests
         {
             buffer.AsSpan(offset, count).Fill((byte)'x');
 
+            BytesRead += count;
+
             return count;
         }
 
@@ -476,8 +537,109 @@ public sealed class OllamaNluContractTests
             cancellationToken.ThrowIfCancellationRequested();
             buffer.Span.Fill((byte)'x');
 
+            BytesRead += buffer.Length;
+
             return ValueTask.FromResult(buffer.Length);
         }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    /// <summary>
+    /// A body that announces an oversized length and records any attempt to read it, so a test can prove
+    /// the adapter rejected the envelope from the header alone.
+    /// </summary>
+    private sealed class UnreadableContent : HttpContent
+    {
+        public UnreadableContent(long declaredLength) => Headers.ContentLength = declaredLength;
+
+        public bool WasRead { get; private set; }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            WasRead = true;
+
+            throw new InvalidOperationException("A body that announced an oversized length must never be read.");
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = Headers.ContentLength ?? 0;
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// A body that declares a length inside the cap and then carries far more, so the announced length
+    /// cannot be trusted as the whole size.
+    /// </summary>
+    private sealed class UnderstatedLengthContent : HttpContent
+    {
+        private readonly int _bytes;
+
+        public UnderstatedLengthContent(int bytes)
+        {
+            _bytes = bytes;
+            Headers.ContentLength = 64;
+        }
+
+        /// <summary>How many bytes the body offered, proving it outgrew its own declared length.</summary>
+        public int Written { get; private set; }
+
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            var block = new byte[8192];
+            Array.Fill(block, (byte)'x');
+
+            while (Written < _bytes)
+            {
+                var chunk = Math.Min(block.Length, _bytes - Written);
+
+                await stream.WriteAsync(block.AsMemory(0, chunk)).ConfigureAwait(false);
+
+                Written += chunk;
+            }
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = Headers.ContentLength ?? 0;
+
+            return true;
+        }
+    }
+
+    /// <summary>A response body that fails with the given transport-level failure on its first read.</summary>
+    private sealed class FaultingStream(Exception failure) : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw failure;
+
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) => ValueTask.FromException<int>(failure);
 
         public override void Flush()
         {

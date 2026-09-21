@@ -51,7 +51,7 @@ public static class NluReplyValidator
                 return NluReplyValidation.Invalid(["$: the reply must be a JSON object"]);
             }
 
-            var problems = new List<string>();
+            var problems = new ProblemCollector();
 
             CollectDuplicateFields(root, problems);
             CollectUndocumentedFields(root, problems);
@@ -92,7 +92,7 @@ public static class NluReplyValidator
             {
                 return NluReplyValidation.Invalid(
                     problems.Count > 0
-                        ? problems
+                        ? problems.ToProblems()
                         : ["$: the reply did not satisfy the NLU contract"]);
             }
 
@@ -117,16 +117,27 @@ public static class NluReplyValidator
         }
     }
 
-    private static void CollectUndocumentedFields(JsonElement root, List<string> problems)
+    private static void CollectUndocumentedFields(JsonElement root, ProblemCollector problems)
     {
         foreach (var property in root.EnumerateObject())
         {
-            if (!NluContract.Fields.Contains(property.Name, StringComparer.Ordinal))
+            if (NluContract.Fields.Contains(property.Name, StringComparer.Ordinal))
             {
-                problems.Add(
-                    $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: is not a field of the documented "
-                    + "NLU contract, so it cannot become structured output");
+                continue;
             }
+
+            // Nothing further can be reported, and the key is untrusted text, so the sanitized copy is not
+            // worth building either.
+            if (problems.IsSaturated)
+            {
+                problems.MarkOmitted();
+
+                return;
+            }
+
+            problems.Add(
+                $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: is not a field of the documented "
+                + "NLU contract, so it cannot become structured output");
         }
     }
 
@@ -135,22 +146,31 @@ public static class NluReplyValidator
     /// the first value and one that keeps the last disagree about the same reply, so no duplicate name
     /// may become a successful interpretation — not even when both values happen to be identical.
     /// </summary>
-    private static void CollectDuplicateFields(JsonElement root, List<string> problems)
+    private static void CollectDuplicateFields(JsonElement root, ProblemCollector problems)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var property in root.EnumerateObject())
         {
-            if (!seen.Add(property.Name))
+            if (seen.Add(property.Name))
             {
-                problems.Add(
-                    $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: appears more than once in the "
-                    + "reply, so the reply is ambiguous and cannot be used");
+                continue;
             }
+
+            if (problems.IsSaturated)
+            {
+                problems.MarkOmitted();
+
+                return;
+            }
+
+            problems.Add(
+                $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: appears more than once in the "
+                + "reply, so the reply is ambiguous and cannot be used");
         }
     }
 
-    private static void CollectMissingRequiredFields(JsonElement root, List<string> problems)
+    private static void CollectMissingRequiredFields(JsonElement root, ProblemCollector problems)
     {
         foreach (var required in NluContract.RequiredFields)
         {
@@ -161,7 +181,7 @@ public static class NluReplyValidator
         }
     }
 
-    private static NluIntent? ReadIntent(JsonElement root, List<string> problems)
+    private static NluIntent? ReadIntent(JsonElement root, ProblemCollector problems)
     {
         if (ReadRequiredText(root, "intent", problems) is not { } intentName)
         {
@@ -181,7 +201,7 @@ public static class NluReplyValidator
         return intent;
     }
 
-    private static NluBudgetType? ReadBudgetType(JsonElement root, List<string> problems)
+    private static NluBudgetType? ReadBudgetType(JsonElement root, ProblemCollector problems)
     {
         if (ReadRequiredText(root, "budgetType", problems) is not { } budgetName)
         {
@@ -199,7 +219,7 @@ public static class NluReplyValidator
         return budgetType;
     }
 
-    private static string? ReadRequiredText(JsonElement root, string field, List<string> problems)
+    private static string? ReadRequiredText(JsonElement root, string field, ProblemCollector problems)
     {
         if (!root.TryGetProperty(field, out var element))
         {
@@ -226,7 +246,7 @@ public static class NluReplyValidator
         return value;
     }
 
-    private static string? ReadOptionalText(JsonElement root, string field, List<string> problems)
+    private static string? ReadOptionalText(JsonElement root, string field, ProblemCollector problems)
     {
         if (!root.TryGetProperty(field, out var element))
         {
@@ -263,7 +283,7 @@ public static class NluReplyValidator
     private static bool IsPlaceholderSentinel(string value) =>
         PlaceholderSentinels.Any(sentinel => string.Equals(value, sentinel, StringComparison.OrdinalIgnoreCase));
 
-    private static decimal? ReadOptionalNumber(JsonElement root, string field, List<string> problems)
+    private static decimal? ReadOptionalNumber(JsonElement root, string field, ProblemCollector problems)
     {
         if (!root.TryGetProperty(field, out var element))
         {
@@ -285,7 +305,7 @@ public static class NluReplyValidator
         return value;
     }
 
-    private static int? ReadOptionalInteger(JsonElement root, string field, List<string> problems)
+    private static int? ReadOptionalInteger(JsonElement root, string field, ProblemCollector problems)
     {
         if (!root.TryGetProperty(field, out var element))
         {
@@ -307,7 +327,7 @@ public static class NluReplyValidator
         return value;
     }
 
-    private static string[] ReadTextArray(JsonElement root, string field, List<string> problems)
+    private static string[] ReadTextArray(JsonElement root, string field, ProblemCollector problems)
     {
         if (!root.TryGetProperty(field, out var element))
         {
@@ -328,6 +348,13 @@ public static class NluReplyValidator
         {
             if (item.ValueKind != JsonValueKind.String)
             {
+                if (problems.IsSaturated)
+                {
+                    problems.MarkOmitted();
+
+                    break;
+                }
+
                 problems.Add($"$.{field}: every member must be a string");
 
                 continue;
@@ -337,6 +364,13 @@ public static class NluReplyValidator
 
             if (value.Length == 0)
             {
+                if (problems.IsSaturated)
+                {
+                    problems.MarkOmitted();
+
+                    break;
+                }
+
                 problems.Add($"$.{field}: members must not be blank");
 
                 continue;
@@ -346,5 +380,62 @@ public static class NluReplyValidator
         }
 
         return [.. values];
+    }
+
+    /// <summary>
+    /// Collects diagnostics without ever retaining more than
+    /// <see cref="NluDiagnostics.MaxRetainedProblems"/> of them. A reply names its own keys, so a hostile
+    /// reply could otherwise build one diagnostic — and one sanitized copy of a key — per key before
+    /// anything clamped the list. A pass that still has something to report checks
+    /// <see cref="IsSaturated"/> before it builds the diagnostic and records
+    /// <see cref="MarkOmitted"/> instead, which is what puts the fixed omission summary on the result.
+    /// </summary>
+    private sealed class ProblemCollector
+    {
+        private readonly List<string> _problems = new(NluDiagnostics.MaxRetainedProblems);
+        private bool _omitted;
+
+        /// <summary>True once no further diagnostic can be retained.</summary>
+        public bool IsSaturated => _problems.Count >= NluDiagnostics.MaxRetainedProblems;
+
+        public int Count => _problems.Count;
+
+        public void Add(string problem)
+        {
+            if (IsSaturated)
+            {
+                MarkOmitted();
+
+                return;
+            }
+
+            _problems.Add(problem);
+        }
+
+        public void AddRange(IEnumerable<string> problems)
+        {
+            foreach (var problem in problems)
+            {
+                Add(problem);
+            }
+        }
+
+        /// <summary>Records that a diagnostic existed but could not be retained.</summary>
+        public void MarkOmitted() => _omitted = true;
+
+        /// <summary>The bounded diagnostics of one reply, clamped and closed with the fixed summary.</summary>
+        public IReadOnlyList<string> ToProblems()
+        {
+            var problems = new List<string>(_problems.Count + 1);
+
+            problems.AddRange(_problems.Select(NluDiagnostics.ClampProblem));
+
+            if (_omitted)
+            {
+                problems.Add(NluDiagnostics.OmittedProblemsSummary);
+            }
+
+            return problems;
+        }
     }
 }
