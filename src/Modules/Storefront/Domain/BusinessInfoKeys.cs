@@ -1,3 +1,5 @@
+using WhatsAppMonitorAssistant.Modules.Storefront.Contracts;
+
 namespace WhatsAppMonitorAssistant.Modules.Storefront.Domain;
 
 /// <summary>
@@ -9,37 +11,28 @@ namespace WhatsAppMonitorAssistant.Modules.Storefront.Domain;
 public static class BusinessInfoKeys
 {
     /// <summary>Opening hours of the shop.</summary>
-    public const string WorkingHours = "WorkingHours";
+    public const string WorkingHours = BusinessInfoKeyNames.WorkingHours;
 
     /// <summary>The address and location of the shop.</summary>
-    public const string Address = "Address";
+    public const string Address = BusinessInfoKeyNames.Address;
 
     /// <summary>The delivery policy.</summary>
-    public const string Delivery = "Delivery";
+    public const string Delivery = BusinessInfoKeyNames.Delivery;
 
     /// <summary>The accepted payment methods.</summary>
-    public const string PaymentMethods = "PaymentMethods";
+    public const string PaymentMethods = BusinessInfoKeyNames.PaymentMethods;
 
     /// <summary>The warranty policy.</summary>
-    public const string Warranty = "Warranty";
+    public const string Warranty = BusinessInfoKeyNames.Warranty;
 
     /// <summary>The contact phone number.</summary>
-    public const string ContactPhone = "ContactPhone";
+    public const string ContactPhone = BusinessInfoKeyNames.ContactPhone;
 
     /// <summary>The return and exchange policy.</summary>
-    public const string ReturnExchangePolicy = "ReturnExchangePolicy";
+    public const string ReturnExchangePolicy = BusinessInfoKeyNames.ReturnExchangePolicy;
 
     /// <summary>Every approved key, in the order docs/PLAN.md section 6 lists the concepts.</summary>
-    public static IReadOnlyList<string> All { get; } =
-    [
-        WorkingHours,
-        Address,
-        Delivery,
-        PaymentMethods,
-        Warranty,
-        ContactPhone,
-        ReturnExchangePolicy,
-    ];
+    public static IReadOnlyList<string> All { get; } = BusinessInfoKeyNames.All;
 
     /// <summary>
     /// Returns the canonical key of an approved key, ignoring outer whitespace and case, so

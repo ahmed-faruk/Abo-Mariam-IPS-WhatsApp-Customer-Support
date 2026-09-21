@@ -73,4 +73,42 @@ public sealed class ProductionArchitectureRulesTests
         RuleAssertions.Holds(
             BoundaryRules.TransportMustNotContainBusinessRules(ModuleBoundaries.Production),
             TestArchitectures.Production);
+
+    /// <summary>
+    /// The Issue #8 benchmark is historical evidence tooling and never a production dependency. No
+    /// project under <c>src/</c> may reference it, which is what keeps production free to own its own
+    /// prompt, schema and contract copies.
+    /// </summary>
+    [Fact]
+    public void No_production_project_references_the_historical_benchmark()
+    {
+        var offenders = Directory
+            .EnumerateFiles(Path.Combine(RepositoryRoot, "src"), "*.csproj", SearchOption.AllDirectories)
+            .Where(file => File.ReadAllText(file).Contains("Issue8.NluBenchmark", StringComparison.Ordinal))
+            .Select(file => Path.GetRelativePath(RepositoryRoot, file))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Empty(offenders);
+    }
+
+    private static string RepositoryRoot { get; } = FindRepositoryRoot();
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "WhatsAppMonitorAssistant.slnx")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new InvalidOperationException(
+            $"WhatsAppMonitorAssistant.slnx was not found above {AppContext.BaseDirectory}.");
+    }
 }

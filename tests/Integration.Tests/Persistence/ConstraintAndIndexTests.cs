@@ -38,6 +38,7 @@ public sealed class ConstraintAndIndexTests(PostgresContainerFixture postgres) :
     [
         "uq_model_port",
         "uq_variant_model_grade",
+        "ux_outbox_correlation_id",
         "ux_conversation_open_customer",
     ];
 

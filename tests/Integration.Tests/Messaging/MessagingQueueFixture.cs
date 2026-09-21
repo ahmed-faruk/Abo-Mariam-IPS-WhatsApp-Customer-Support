@@ -58,9 +58,13 @@ public abstract class MessagingQueueFixture(PostgresContainerFixture postgres) :
 
         var outbound = services.GetRequiredService<IOutboundMessageQueue>();
 
+        // Every enqueued reply of a test is a different logical reply, so it carries its own
+        // correlation. The correlation id is what makes the Outbox enqueue idempotent, and the queue
+        // tests below enqueue several replies into one partition to exercise ordering.
         return await outbound.EnqueueAsync(MessagingSamples.Outbound(
             conversationId: long.Parse(partitionKey, CultureInfo.InvariantCulture),
-            customerExternalId: $"20100{suffix}"));
+            customerExternalId: $"20100{suffix}",
+            correlationId: $"corr-{suffix}"));
     }
 
     internal static async Task<IReadOnlyList<QueueClaim>> ClaimAsync(

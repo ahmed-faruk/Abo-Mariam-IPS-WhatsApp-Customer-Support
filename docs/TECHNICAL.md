@@ -724,6 +724,10 @@ State example:
 
 State is UX context only. Commercial facts are always reloaded.
 
+The document is short-lived: one sliding time to live of exactly **30 minutes**, refreshed on every
+successful write, and the whole document expires together. Expired or malformed state is read as empty
+and is replaced by the next successful write.
+
 ---
 
 # 14. Webhook boundary
@@ -811,9 +815,11 @@ Conversations.ProcessInboundTurn
 
 # 17. WhatsApp service-window behavior
 
-`window_expires_at` updates only on inbound customer messages.
+`window_expires_at` updates only on inbound customer messages, and is
+`provider_timestamp + 24 hours`.
 
-Before every reactive free-form send, ensure the window is still open.
+Before every reactive free-form send, ensure the window is still open: it is open only while the expiry
+is strictly in the future, so the expiry instant itself is closed.
 
 Lean demo contains no proactive template workflow. If closed:
 

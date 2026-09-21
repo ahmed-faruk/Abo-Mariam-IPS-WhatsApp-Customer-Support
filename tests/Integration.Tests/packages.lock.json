@@ -367,9 +367,13 @@
         "dependencies": {
           "BuildingBlocks.Application": "[1.0.0, )",
           "BuildingBlocks.Domain": "[1.0.0, )",
+          "Catalog": "[1.0.0, )",
+          "Intelligence": "[1.0.0, )",
+          "Messaging": "[1.0.0, )",
           "Microsoft.EntityFrameworkCore": "[10.0.8, )",
           "Microsoft.EntityFrameworkCore.Relational": "[10.0.8, )",
-          "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )"
+          "Npgsql.EntityFrameworkCore.PostgreSQL": "[10.0.3, )",
+          "Storefront": "[1.0.0, )"
         }
       },
       "host.web": {

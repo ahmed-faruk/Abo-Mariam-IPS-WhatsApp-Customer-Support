@@ -18,7 +18,8 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
         {
             ["CatalogDbContext"] = ["InitialCatalog", "CanonicalProductModelCode"],
             ["ConversationDbContext"] = ["InitialConversations"],
-            ["MessagingDbContext"] = ["InitialMessaging", "AddClaimLeasesAndUtf8BodyHash"],
+            ["MessagingDbContext"] =
+                ["InitialMessaging", "AddClaimLeasesAndUtf8BodyHash", "AddOutboxCorrelationUniqueness"],
             ["StorefrontDbContext"] = ["InitialStorefront"],
             ["IdentityDbContext"] = ["InitialIdentity"],
         };

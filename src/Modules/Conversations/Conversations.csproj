@@ -7,6 +7,10 @@
   <ItemGroup>
     <ProjectReference Include="../../BuildingBlocks/Application/BuildingBlocks.Application.csproj" />
     <ProjectReference Include="../../BuildingBlocks/Domain/BuildingBlocks.Domain.csproj" />
+    <ProjectReference Include="../Catalog/Catalog.csproj" />
+    <ProjectReference Include="../Intelligence/Intelligence.csproj" />
+    <ProjectReference Include="../Messaging/Messaging.csproj" />
+    <ProjectReference Include="../Storefront/Storefront.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -17,6 +21,13 @@
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The orchestration and its routing are module-internal decisions. The unit suite drives them
+         through their internal seams, and the integration suite drives the real persistence. -->
+    <InternalsVisibleTo Include="Unit.Tests" />
+    <InternalsVisibleTo Include="Integration.Tests" />
   </ItemGroup>
 
 </Project>

@@ -233,6 +233,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CorrelationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_outbox_correlation_id");
+
                     b.HasIndex("ProviderMessageId")
                         .IsUnique();
 
