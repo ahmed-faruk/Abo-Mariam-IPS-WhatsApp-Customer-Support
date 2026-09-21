@@ -2,6 +2,8 @@ using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Catalog.Features.SearchProducts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
+using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure;
+using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure.Ollama;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure;
@@ -46,6 +48,12 @@ public static class CompositionRoot
         services.AddMessagingModule(connectionString);
         services.AddStorefrontModule(connectionString);
         services.AddIdentityPersistence(connectionString);
+
+        // The AI profile is the frozen Controlled Demo Candidate of docs/TECHNICAL.md section 8.2 and
+        // is validated at startup, so the host never runs an unmeasured model configuration. Its keys,
+        // values and environment variables are documented in docs/CONFIGURATION.md.
+        services.AddIntelligenceModule(options =>
+            configuration.GetSection(OllamaAiOptions.ConfigurationSectionName).Bind(options));
 
         return services;
     }

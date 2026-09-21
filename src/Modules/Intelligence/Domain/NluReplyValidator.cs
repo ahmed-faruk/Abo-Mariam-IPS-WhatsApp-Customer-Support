@@ -1,0 +1,441 @@
+using System.Text.Json;
+using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
+
+namespace WhatsAppMonitorAssistant.Modules.Intelligence.Domain;
+
+/// <summary>
+/// Validates one structured-NLU reply from a model against the frozen contract of
+/// docs/TECHNICAL.md sections 8.3 and 9. Deserialization alone is not enough, so the validator checks
+/// the JSON shape, the canonical vocabularies, the budget semantics and the null/empty-collection
+/// convention, and rejects any key the documented contract does not contain — including the
+/// commercial facts such as price or stock that the model must never author.
+/// </summary>
+/// <remarks>
+/// Problems are path-based and never repeat the model's values, so a problem can be shown to an
+/// operator without leaking model-authored commercial text. Only a received reply is validated; a
+/// transport failure never reaches this type.
+/// </remarks>
+public static class NluReplyValidator
+{
+    /// <summary>
+    /// The placeholder strings the frozen prompt explicitly forbids for an absent value. A reply that
+    /// uses one of them said nothing, so it is an invalid reply rather than a stated fact.
+    /// </summary>
+    private static readonly string[] PlaceholderSentinels = ["unknown", "n/a", "default"];
+
+    /// <summary>Validates one model reply.</summary>
+    public static NluReplyValidation Validate(string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return NluReplyValidation.Invalid(["$: the reply is empty"]);
+        }
+
+        JsonDocument document;
+
+        try
+        {
+            document = JsonDocument.Parse(content);
+        }
+        catch (JsonException)
+        {
+            return NluReplyValidation.Invalid(["$: the reply is not valid JSON"]);
+        }
+
+        using (document)
+        {
+            var root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return NluReplyValidation.Invalid(["$: the reply must be a JSON object"]);
+            }
+
+            var problems = new ProblemCollector();
+
+            CollectDuplicateFields(root, problems);
+            CollectUndocumentedFields(root, problems);
+            CollectMissingRequiredFields(root, problems);
+
+            var intent = ReadIntent(root, problems);
+            var brand = ReadOptionalText(root, "brand", problems);
+            var modelCode = ReadOptionalText(root, "modelCode", problems);
+            var sizeInches = ReadOptionalNumber(root, "sizeInches", problems);
+            var panel = ReadOptionalText(root, "panel", problems);
+            var resolution = ReadOptionalText(root, "resolution", problems);
+            var minRefreshRate = ReadOptionalInteger(root, "minRefreshRate", problems);
+            var requiredPorts = ReadTextArray(root, "requiredPorts", problems);
+            var grades = ReadTextArray(root, "grades", problems);
+            var budgetType = ReadBudgetType(root, problems);
+            var budgetTarget = ReadOptionalNumber(root, "budgetTarget", problems);
+            var budgetMin = ReadOptionalNumber(root, "budgetMin", problems);
+            var budgetMax = ReadOptionalNumber(root, "budgetMax", problems);
+            var useCase = ReadOptionalText(root, "useCase", problems);
+            var reference = ReadOptionalText(root, "reference", problems);
+
+            if (sizeInches is <= 0)
+            {
+                problems.Add("$.sizeInches: the requested size must be greater than zero");
+            }
+
+            if (minRefreshRate is <= 0)
+            {
+                problems.Add("$.minRefreshRate: a refresh rate must be greater than zero");
+            }
+
+            if (budgetType is { } statedBudget)
+            {
+                problems.AddRange(NluBudgetRules.Validate(statedBudget, budgetTarget, budgetMin, budgetMax));
+            }
+
+            if (problems.Count > 0 || intent is null || budgetType is null)
+            {
+                return NluReplyValidation.Invalid(
+                    problems.Count > 0
+                        ? problems.ToProblems()
+                        : ["$: the reply did not satisfy the NLU contract"]);
+            }
+
+            return NluReplyValidation.Valid(new NluInterpretation
+            {
+                Intent = intent.Value,
+                Brand = brand,
+                ModelCode = modelCode,
+                SizeInches = sizeInches,
+                Panel = panel,
+                Resolution = resolution,
+                MinRefreshRate = minRefreshRate,
+                RequiredPorts = requiredPorts,
+                Grades = grades,
+                BudgetType = budgetType.Value,
+                BudgetTarget = budgetTarget,
+                BudgetMin = budgetMin,
+                BudgetMax = budgetMax,
+                UseCase = useCase,
+                Reference = reference,
+            });
+        }
+    }
+
+    private static void CollectUndocumentedFields(JsonElement root, ProblemCollector problems)
+    {
+        foreach (var property in root.EnumerateObject())
+        {
+            if (NluContract.Fields.Contains(property.Name, StringComparer.Ordinal))
+            {
+                continue;
+            }
+
+            // Nothing further can be reported, and the key is untrusted text, so the sanitized copy is not
+            // worth building either.
+            if (problems.IsSaturated)
+            {
+                problems.MarkOmitted();
+
+                return;
+            }
+
+            problems.Add(
+                $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: is not a field of the documented "
+                + "NLU contract, so it cannot become structured output");
+        }
+    }
+
+    /// <summary>
+    /// A JSON object whose text repeats a property name is structurally ambiguous: a reader that keeps
+    /// the first value and one that keeps the last disagree about the same reply, so no duplicate name
+    /// may become a successful interpretation — not even when both values happen to be identical.
+    /// </summary>
+    private static void CollectDuplicateFields(JsonElement root, ProblemCollector problems)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var property in root.EnumerateObject())
+        {
+            if (seen.Add(property.Name))
+            {
+                continue;
+            }
+
+            if (problems.IsSaturated)
+            {
+                problems.MarkOmitted();
+
+                return;
+            }
+
+            problems.Add(
+                $"$.{NluDiagnostics.SanitizeIdentifier(property.Name)}: appears more than once in the "
+                + "reply, so the reply is ambiguous and cannot be used");
+        }
+    }
+
+    private static void CollectMissingRequiredFields(JsonElement root, ProblemCollector problems)
+    {
+        foreach (var required in NluContract.RequiredFields)
+        {
+            if (!root.TryGetProperty(required, out _))
+            {
+                problems.Add($"$.{required}: is required by the NLU contract");
+            }
+        }
+    }
+
+    private static NluIntent? ReadIntent(JsonElement root, ProblemCollector problems)
+    {
+        if (ReadRequiredText(root, "intent", problems) is not { } intentName)
+        {
+            return null;
+        }
+
+        if (!Enum.TryParse<NluIntent>(intentName, ignoreCase: false, out var intent)
+            || !string.Equals(intent.ToString(), intentName, StringComparison.Ordinal))
+        {
+            problems.Add(
+                "$.intent: is not one of the documented intent names; use the canonical spelling, "
+                + "for example ProductSearch rather than an alias");
+
+            return null;
+        }
+
+        return intent;
+    }
+
+    private static NluBudgetType? ReadBudgetType(JsonElement root, ProblemCollector problems)
+    {
+        if (ReadRequiredText(root, "budgetType", problems) is not { } budgetName)
+        {
+            return null;
+        }
+
+        if (!Enum.TryParse<NluBudgetType>(budgetName, ignoreCase: false, out var budgetType)
+            || !string.Equals(budgetType.ToString(), budgetName, StringComparison.Ordinal))
+        {
+            problems.Add("$.budgetType: is not one of None, Soft, Hard or Range");
+
+            return null;
+        }
+
+        return budgetType;
+    }
+
+    private static string? ReadRequiredText(JsonElement root, string field, ProblemCollector problems)
+    {
+        if (!root.TryGetProperty(field, out var element))
+        {
+            // The missing-required pass already reported the absent field.
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            problems.Add($"$.{field}: must be a string");
+
+            return null;
+        }
+
+        var value = (element.GetString() ?? string.Empty).Trim();
+
+        if (value.Length == 0)
+        {
+            problems.Add($"$.{field}: must not be blank");
+
+            return null;
+        }
+
+        return value;
+    }
+
+    private static string? ReadOptionalText(JsonElement root, string field, ProblemCollector problems)
+    {
+        if (!root.TryGetProperty(field, out var element))
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            problems.Add($"$.{field}: must be a string or null");
+
+            return null;
+        }
+
+        var value = element.GetString() ?? string.Empty;
+        var trimmed = value.Trim();
+
+        if (trimmed.Length == 0 || IsPlaceholderSentinel(trimmed))
+        {
+            problems.Add(
+                $"$.{field}: must be null when the customer did not provide it, never an empty string or a "
+                + "placeholder such as \"unknown\", \"N/A\" or \"default\"");
+
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static bool IsPlaceholderSentinel(string value) =>
+        PlaceholderSentinels.Any(sentinel => string.Equals(value, sentinel, StringComparison.OrdinalIgnoreCase));
+
+    private static decimal? ReadOptionalNumber(JsonElement root, string field, ProblemCollector problems)
+    {
+        if (!root.TryGetProperty(field, out var element))
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Number || !element.TryGetDecimal(out var value))
+        {
+            problems.Add($"$.{field}: must be a number or null");
+
+            return null;
+        }
+
+        return value;
+    }
+
+    private static int? ReadOptionalInteger(JsonElement root, string field, ProblemCollector problems)
+    {
+        if (!root.TryGetProperty(field, out var element))
+        {
+            return null;
+        }
+
+        if (element.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Number || !element.TryGetInt32(out var value))
+        {
+            problems.Add($"$.{field}: must be a whole number or null");
+
+            return null;
+        }
+
+        return value;
+    }
+
+    private static string[] ReadTextArray(JsonElement root, string field, ProblemCollector problems)
+    {
+        if (!root.TryGetProperty(field, out var element))
+        {
+            return [];
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            problems.Add(
+                $"$.{field}: must be an array, using an empty array when the customer provided nothing");
+
+            return [];
+        }
+
+        var values = new List<string>();
+
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                if (problems.IsSaturated)
+                {
+                    problems.MarkOmitted();
+
+                    break;
+                }
+
+                problems.Add($"$.{field}: every member must be a string");
+
+                continue;
+            }
+
+            var value = (item.GetString() ?? string.Empty).Trim();
+
+            if (value.Length == 0)
+            {
+                if (problems.IsSaturated)
+                {
+                    problems.MarkOmitted();
+
+                    break;
+                }
+
+                problems.Add($"$.{field}: members must not be blank");
+
+                continue;
+            }
+
+            values.Add(value);
+        }
+
+        return [.. values];
+    }
+
+    /// <summary>
+    /// Collects diagnostics without ever retaining more than
+    /// <see cref="NluDiagnostics.MaxRetainedProblems"/> of them. A reply names its own keys, so a hostile
+    /// reply could otherwise build one diagnostic — and one sanitized copy of a key — per key before
+    /// anything clamped the list. A pass that still has something to report checks
+    /// <see cref="IsSaturated"/> before it builds the diagnostic and records
+    /// <see cref="MarkOmitted"/> instead, which is what puts the fixed omission summary on the result.
+    /// </summary>
+    private sealed class ProblemCollector
+    {
+        private readonly List<string> _problems = new(NluDiagnostics.MaxRetainedProblems);
+        private bool _omitted;
+
+        /// <summary>True once no further diagnostic can be retained.</summary>
+        public bool IsSaturated => _problems.Count >= NluDiagnostics.MaxRetainedProblems;
+
+        public int Count => _problems.Count;
+
+        public void Add(string problem)
+        {
+            if (IsSaturated)
+            {
+                MarkOmitted();
+
+                return;
+            }
+
+            _problems.Add(problem);
+        }
+
+        public void AddRange(IEnumerable<string> problems)
+        {
+            foreach (var problem in problems)
+            {
+                Add(problem);
+            }
+        }
+
+        /// <summary>Records that a diagnostic existed but could not be retained.</summary>
+        public void MarkOmitted() => _omitted = true;
+
+        /// <summary>The bounded diagnostics of one reply, clamped and closed with the fixed summary.</summary>
+        public IReadOnlyList<string> ToProblems()
+        {
+            var problems = new List<string>(_problems.Count + 1);
+
+            problems.AddRange(_problems.Select(NluDiagnostics.ClampProblem));
+
+            if (_omitted)
+            {
+                problems.Add(NluDiagnostics.OmittedProblemsSummary);
+            }
+
+            return problems;
+        }
+    }
+}

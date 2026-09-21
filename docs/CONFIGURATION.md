@@ -40,3 +40,36 @@ dotnet user-secrets set "Catalog:Search:SoftBudgetTolerance" "<fraction>" --proj
 export Catalog__Search__SizeToleranceInches='<inches>'
 export Catalog__Search__SoftBudgetTolerance='<fraction>'
 ```
+
+## Intelligence AI profile
+
+The Intelligence module reads its AI profile from the `Ai` section. The values below are the frozen
+Controlled Demo Candidate of `docs/TECHNICAL.md` section 8.2 — the local model Issue #9 froze after
+the Issue #8 benchmark — so they are committed as defaults in `src/Host.Web/appsettings.json`.
+
+For the current Controlled Demo Candidate every one of these values is **frozen**:
+
+| Configuration key | Environment variable | Type | Frozen value |
+|---|---|---|---|
+| `Ai:Provider` | `Ai__Provider` | string | `Ollama` |
+| `Ai:BaseUrl` | `Ai__BaseUrl` | absolute URL | `http://127.0.0.1:11434` |
+| `Ai:Model` | `Ai__Model` | string | `qwen3.5:2b-q4_K_M` |
+| `Ai:TimeoutSeconds` | `Ai__TimeoutSeconds` | integer seconds | `20` |
+| `Ai:Temperature` | `Ai__Temperature` | number | `0` |
+| `Ai:ContextTokens` | `Ai__ContextTokens` | integer tokens | `4096` |
+
+The environment-variable names exist because that is how ASP.NET Core configuration addresses the
+section, not because the local demo supports overriding it. `Host.Web` validates the profile at
+startup and rejects a different provider, model, timeout, temperature or context size instead of
+running an unmeasured configuration.
+
+Changing any frozen value — a different model, timeout, temperature, context size or
+provider/profile — is therefore **not a supported local-demo override**. It needs a new explicit
+architecture and acceptance decision plus the benchmark procedure of `docs/TECHNICAL.md` section 28,
+because the model, the prompt and the schema are one measured identity. The base URL stays with the
+frozen profile for the same reason: the controlled demo reaches Ollama on `127.0.0.1` only.
+
+The frozen request shape is not configurable: structured JSON schema output, `stream: false`,
+`think: false`, one corrective retry maximum for a reply that is invalid, unparsable or schema-invalid,
+no schema retry for a transport failure, and prompt `nlu-system-prompt-v3`. Local Ollama needs no
+credentials, and it must never be exposed publicly; the demo runs Ollama on `127.0.0.1` only.

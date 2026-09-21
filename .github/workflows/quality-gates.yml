@@ -41,6 +41,9 @@ jobs:
       - name: Architecture tests
         run: dotnet test tests/Architecture.Tests --no-build --logger "console;verbosity=normal"
 
+      - name: Contract tests
+        run: dotnet test tests/Contract.Tests --no-build --logger "console;verbosity=normal"
+
       # ---------------------------------------------------------------------
       # Future gates: placeholders only.
       #
@@ -50,7 +53,7 @@ jobs:
       #
       # Required gate                Owning ticket                       Step to add
       # Integration.Tests            #5 (also #4 for PostgreSQL)         dotnet test tests/Integration.Tests --no-build   (PostgreSQL Testcontainer)
-      # Contract.Tests               #10 (Intelligence), #13 (Meta)      dotnet test tests/Contract.Tests --no-build
+      # Contract.Tests (Meta part)   #13 (Meta webhook/outbound)         the Ollama part of tests/Contract.Tests is enabled above with #10
       # E2E.Tests                    #15 (fake Meta/Ollama flow)         dotnet test tests/E2E.Tests --no-build
       # Playwright critical smoke    #14 (Admin UI)                      npx playwright test
       # Coverage (>=80% Domain/App)  CI expansion                        dotnet test ... --collect:"XPlat Code Coverage" + threshold check
