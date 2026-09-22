@@ -82,17 +82,20 @@ internal sealed class ConversationOperationCoordinator(ConversationDbContext dbC
     {
         private bool committed;
 
-        public async Task<string> ReloadModeAsync(CancellationToken cancellationToken)
+        public async Task<ConversationModeSnapshot> ReloadModeAsync(CancellationToken cancellationToken)
         {
             // A projection reads the stored value itself: the entity this turn loaded when it started is
-            // not consulted, so a mode change committed by another operation after that is seen here.
-            var mode = await dbContext.Conversations
+            // not consulted, so a mode change committed by another operation after that is seen here. The
+            // revision is read in the same projection, so the two always describe one stored decision.
+            var stored = await dbContext.Conversations
                 .Where(conversation => conversation.Id == conversationId)
-                .Select(conversation => conversation.Mode)
+                .Select(conversation => new { conversation.Mode, conversation.ModeRevision })
                 .FirstOrDefaultAsync(cancellationToken);
 
-            return mode ?? throw new InvalidOperationException(
-                $"The conversation {conversationId} of this operation no longer exists.");
+            return stored is null
+                ? throw new InvalidOperationException(
+                    $"The conversation {conversationId} of this operation no longer exists.")
+                : new ConversationModeSnapshot(stored.Mode, stored.ModeRevision);
         }
 
         public async Task CommitAsync(CancellationToken cancellationToken)

@@ -62,6 +62,7 @@ internal sealed class ConversationTurnStore(
             CustomerId = customerId,
             ConversationId = conversation.Id,
             Mode = conversation.Mode,
+            ModeRevision = conversation.ModeRevision,
             WindowExpiresAt = conversation.WindowExpiresAt,
         };
     }
@@ -161,9 +162,21 @@ internal sealed class ConversationTurnStore(
             ?? throw new InvalidOperationException(
                 $"The conversation {context.ConversationId} of this turn no longer exists.");
 
+        var previousMode = conversation.Mode;
+
         conversation.Mode = mode;
         conversation.UpdatedAt = utcNow;
+
+        // A mode decision this turn really made counts as one more decision for the conversation, so a
+        // handoff that was made durable earlier can tell that a later decision has replaced it. A write that
+        // leaves the mode as it is decides nothing and adds nothing.
+        if (!string.Equals(previousMode, mode, StringComparison.Ordinal))
+        {
+            conversation.ModeRevision++;
+        }
+
         context.Mode = mode;
+        context.ModeRevision = conversation.ModeRevision;
     }
 
     public Task CommitAsync(CancellationToken cancellationToken) => dbContext.SaveChangesAsync(cancellationToken);

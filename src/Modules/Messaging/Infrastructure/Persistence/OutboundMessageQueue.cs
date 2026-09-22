@@ -26,11 +26,11 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
             (@conversation_id, @customer_external_id, @correlation_id, @sender, @body, @body_hash,
              @application_metadata, @partition_key)
         ON CONFLICT (correlation_id) DO NOTHING
-        RETURNING id, body, application_metadata;
+        RETURNING id, conversation_id, body, application_metadata;
         """;
 
     private const string SelectByCorrelationSql = """
-        SELECT id, body, application_metadata
+        SELECT id, conversation_id, body, application_metadata
         FROM messaging.outbox_message
         WHERE correlation_id = @correlation_id;
         """;
@@ -84,8 +84,9 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
             {
                 return new OutboundAcceptance(
                     reader.GetInt64(0),
-                    reader.GetString(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.GetInt64(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
                     IsExisting: false);
             }
         }
@@ -113,8 +114,9 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         return await reader.ReadAsync(cancellationToken)
             ? new OutboundAcceptance(
                 reader.GetInt64(0),
-                reader.GetString(1),
-                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetInt64(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
                 IsExisting: true)
             : null;
     }

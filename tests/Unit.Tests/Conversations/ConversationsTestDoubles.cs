@@ -30,6 +30,9 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
 
     public string Mode { get; set; } = ConversationModes.Ai;
 
+    /// <summary>How many explicit mode decisions the stored conversation has had, as the real row counts them.</summary>
+    public long ModeRevision { get; set; }
+
     public DateTime? WindowExpiresAt { get; set; }
 
     public ConversationStateDocument State { get; set; } = ConversationStateDocument.Empty;
@@ -73,6 +76,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
             CustomerId = CustomerId,
             ConversationId = ConversationId,
             Mode = Mode,
+            ModeRevision = ModeRevision,
             WindowExpiresAt = WindowExpiresAt,
         });
     }
@@ -135,8 +139,15 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         CancellationToken cancellationToken)
     {
         Journal.Add($"store:set-mode:{mode}");
+
+        if (!string.Equals(Mode, mode, StringComparison.Ordinal))
+        {
+            ModeRevision++;
+        }
+
         Mode = mode;
         context.Mode = mode;
+        context.ModeRevision = ModeRevision;
         ModeChangeCount++;
 
         return Task.CompletedTask;
@@ -160,6 +171,24 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
     }
 
     /// <summary>
+    /// Applies one of the operator's own mode decisions the way the real mode control does: a decision that
+    /// really changes the mode advances the conversation's mode revision by one, and one that changes
+    /// nothing does not.
+    /// </summary>
+    public void OperatorDecides(string mode)
+    {
+        Journal.Add($"operator:decides:{mode}");
+
+        if (string.Equals(Mode, mode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Mode = mode;
+        ModeRevision++;
+    }
+
+    /// <summary>
     /// The serialized final section of one turn. The real operation takes a PostgreSQL lock that orders
     /// it against the operator's mode changes; here the same decision is observable through the journal:
     /// the mode is read again as it is stored now, and the commit releases the section.
@@ -168,11 +197,11 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         FakeConversationTurnStore store,
         List<string> journal) : IConversationOperation
     {
-        public Task<string> ReloadModeAsync(CancellationToken cancellationToken)
+        public Task<ConversationModeSnapshot> ReloadModeAsync(CancellationToken cancellationToken)
         {
             journal.Add("store:reload-mode");
 
-            return Task.FromResult(store.Mode);
+            return Task.FromResult(new ConversationModeSnapshot(store.Mode, store.ModeRevision));
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
@@ -246,14 +275,36 @@ internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
 
     public long NextMessageId { get; set; } = 501;
 
+    /// <summary>The conversation this queue stores for, which is the one its requests name.</summary>
+    public long ConversationId { get; set; } = 7;
+
     public bool Fails { get; set; }
+
+    /// <summary>
+    /// The durable row another writer already holds the correlation with, so an enqueue of this queue
+    /// loses the conflict even though its own read found nothing.
+    /// </summary>
+    public OutboundAcceptance? ConflictingAcceptance { get; set; }
 
     /// <summary>
     /// Stores a durable reply the way an earlier attempt of the same turn would have, so a test can drive
     /// the retry path with an already accepted correlation.
     /// </summary>
-    public void PreStore(string correlationId, string body, string? applicationMetadata = null) =>
-        accepted[correlationId] = new OutboundAcceptance(NextMessageId, body, applicationMetadata, IsExisting: true);
+    /// <param name="conversationId">
+    /// The conversation the row was really accepted for, when a test needs a reply that belongs to a
+    /// different conversation than the turn under test.
+    /// </param>
+    public void PreStore(
+        string correlationId,
+        string body,
+        string? applicationMetadata = null,
+        long? conversationId = null) =>
+        accepted[correlationId] = new OutboundAcceptance(
+            NextMessageId,
+            conversationId ?? ConversationId,
+            body,
+            applicationMetadata,
+            IsExisting: true);
 
     public Task<OutboundAcceptance?> FindByCorrelationAsync(
         string correlationId,
@@ -277,6 +328,11 @@ internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
                 new InvalidOperationException("The durable Outbox refused the intent."));
         }
 
+        if (ConflictingAcceptance is { } conflict)
+        {
+            return Task.FromResult(conflict with { IsExisting = true });
+        }
+
         if (accepted.TryGetValue(request.CorrelationId, out var existing))
         {
             // A correlation already has an immutable row, so its stored body and metadata win.
@@ -285,6 +341,7 @@ internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
 
         var stored = new OutboundAcceptance(
             NextMessageId++,
+            request.ConversationId,
             request.Body,
             request.ApplicationMetadata,
             IsExisting: false);

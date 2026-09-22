@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
@@ -11,9 +12,11 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Migrations
 {
     [DbContext(typeof(ConversationDbContext))]
-    partial class ConversationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260922212425_AddConversationModeRevision")]
+    partial class AddConversationModeRevision
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

@@ -254,6 +254,36 @@ public sealed class DeterministicConversationRendererTests
     }
 
     [Fact]
+    public async Task A_comparison_never_numbers_the_candidates_it_displayed()
+    {
+        var harness = new RendererHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+        harness.Details.Publish(ConversationSamples.ActiveModel(12, 31));
+
+        // The candidate the customer heard first is retired while the reply is being prepared, so it drops
+        // out of the comparison. A comparison stores no displayed list of its own, and the conversation's
+        // own shortlist still numbers the products the earlier search showed, so the surviving products may
+        // not be renumbered into new positions that no stored list agrees with.
+        harness.Details.Withdraw(10);
+
+        var rendered = await harness.Renderer.RenderAsync(
+            harness.Intent(ConversationResponseKind.ProductComparison)
+                .WithCandidates([(10, 21), (11, 25), (12, 31)]));
+
+        Assert.True(rendered.IsRendered);
+        Assert.DoesNotContain("Dell 10", rendered.Body, StringComparison.Ordinal);
+        Assert.Empty(rendered.DisplayedCandidates);
+
+        // Each surviving product is named by its own identity instead of by a number.
+        var lines = rendered.Body!.Split('\n').Skip(1).ToList();
+
+        Assert.All(lines, line => Assert.StartsWith("* ", line, StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("Dell 11", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("Dell 12", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task A_business_question_is_answered_with_the_current_stored_arabic_value()
     {
         var harness = new RendererHarness();

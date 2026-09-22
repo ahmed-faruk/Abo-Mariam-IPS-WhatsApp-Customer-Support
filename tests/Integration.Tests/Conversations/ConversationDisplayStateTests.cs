@@ -170,7 +170,8 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
             "wamid.closed-mode",
             ConversationOutboxMetadata.For(
                 [new ConversationDisplayedCandidate(10, 21)],
-                entersHumanMode: true).ToJson());
+                entersHumanMode: true,
+                modeRevision: await RevisionAsync(created.ConversationId)).ToJson());
         var renderCalls = doubles.Renderer.Intents.Count;
 
         // The operator closes the conversation while this turn is still interpreting the message, after an
@@ -252,6 +253,78 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
                 + $"WHERE id = {result.ConversationId}"));
     }
 
+    [Fact]
+    public async Task A_retry_whose_reply_was_accepted_by_a_closed_conversation_never_lands_on_the_new_one()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = StartSearchHost(d => doubles = d);
+
+        // The first turn belongs to conversation A and displayed two products.
+        var closed = await ProcessAsync(host, "wamid.other-conversation-first");
+
+        Assert.Equal("2", await ShortlistCountAsync(closed.ConversationId));
+
+        // An earlier attempt of the retried inbound stored its reply for A - a handoff acknowledgement that
+        // also claims a displayed list - and then died before its Conversations change was committed.
+        var storedId = await StoreAcceptedReplyAsync(
+            host,
+            closed.ConversationId,
+            "wamid.other-conversation-retry",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: true,
+                modeRevision: await RevisionAsync(closed.ConversationId)).ToJson());
+
+        // The operator closes A before the Inbox retries the same provider message.
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await scope.ServiceProvider.GetRequiredService<IConversationModeControl>()
+                    .CloseAsync(closed.ConversationId));
+        }
+
+        var renderCalls = doubles.Renderer.Intents.Count;
+        var nluCalls = doubles.Nlu.CallCount;
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+
+        // The retried inbound names the closed conversation, so OpenTurn resolves the new active one.
+        var retried = await ProcessAsync(
+            host,
+            "wamid.other-conversation-retry",
+            conversationId: closed.ConversationId);
+
+        // The durable reply belongs to A, so nothing of it may be reconciled onto the new conversation:
+        // not its list, not its handoff effect, not its outbound lifecycle, and not the retried inbound
+        // either. The turn is a safe non-send for the conversation that never answered this message.
+        Assert.NotEqual(closed.ConversationId, retried.ConversationId);
+        Assert.Equal(ConversationTurnOutcome.NoResponse, retried.Outcome);
+        Assert.Null(retried.OutboxMessageId);
+        Assert.Equal(ConversationMode.Ai, retried.Mode);
+        Assert.Equal("0", await StateCountAsync(retried.ConversationId));
+        Assert.Equal(
+            "true",
+            await catalog.ScalarAsync(
+                "SELECT (last_outbound_at IS NULL)::text FROM conversations.conversation "
+                + $"WHERE id = {retried.ConversationId}"));
+        Assert.Equal(
+            "true",
+            await catalog.ScalarAsync(
+                "SELECT (last_inbound_at IS NULL AND window_expires_at IS NULL)::text "
+                + $"FROM conversations.conversation WHERE id = {retried.ConversationId}"));
+
+        // Nothing is interpreted, rendered or stored a second time, A stays closed, and the durable reply
+        // is still exactly the one row the closed conversation accepted.
+        Assert.Equal(nluCalls, doubles.Nlu.CallCount);
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("Closed", await ModeAsync(closed.ConversationId));
+        Assert.Equal("2", await OutboxCountAsync());
+        Assert.Equal(
+            closed.ConversationId.ToString(CultureInfo.InvariantCulture),
+            await catalog.ScalarAsync(
+                $"SELECT conversation_id FROM messaging.outbox_message WHERE id = {storedId}"));
+    }
+
     private static async Task<long> StoreAcceptedReplyAsync(
         ConversationsHost host,
         long conversationId,
@@ -274,6 +347,13 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
 
     private Task<string> ModeAsync(long conversationId) =>
         catalog.ScalarAsync($"SELECT mode FROM conversations.conversation WHERE id = {conversationId}");
+
+    /// <summary>How many explicit mode decisions the stored conversation has had.</summary>
+    private async Task<long> RevisionAsync(long conversationId) =>
+        long.Parse(
+            await catalog.ScalarAsync(
+                $"SELECT mode_revision FROM conversations.conversation WHERE id = {conversationId}"),
+            CultureInfo.InvariantCulture);
 
     private ConversationsHost StartSearchHost(
         Action<ConversationDoubles> observe,
@@ -310,6 +390,10 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
 
     private Task<string> ShortlistCountAsync(long conversationId) =>
         StateAsync(conversationId, "coalesce(jsonb_array_length(state_json->'shortlist'), 0)");
+
+    private Task<string> StateCountAsync(long conversationId) =>
+        catalog.ScalarAsync(
+            $"SELECT count(*) FROM conversations.conversation_state WHERE conversation_id = {conversationId}");
 
     private Task<string> StateAsync(long conversationId, string expression) =>
         catalog.ScalarAsync(
@@ -351,7 +435,8 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
     private static async Task<ConversationTurnResult> ProcessAsync(
         ConversationsHost host,
         string providerMessageId,
-        DateTime? providerTimestamp = null)
+        DateTime? providerTimestamp = null,
+        long? conversationId = null)
     {
         await using var scope = host.CreateScope();
 
@@ -361,6 +446,7 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
                 Customer,
                 "text",
                 providerTimestamp ?? ConversationsTestDoubles.Now,
-                "عندك ديل 24؟"));
+                "عندك ديل 24؟",
+                conversationId));
     }
 }

@@ -60,15 +60,22 @@ internal static class RealRendererDoubles
     /// what a test uses to change a catalogue or Storefront fact exactly between the turn's preliminary
     /// decision and the revalidation the reply is really built from.
     /// </param>
+    /// <param name="beforeRenderOnTurn">
+    /// Which reply of the test the hook runs before, counting from one. A test whose interleaving belongs
+    /// to a later turn, such as a follow-up comparison, states that turn instead of the first.
+    /// </param>
     public static StubAiNluClient AddRealRenderer(
         this IServiceCollection services,
         NluAnalysisResult analysis,
-        Func<CancellationToken, Task>? beforeRender = null)
+        Func<CancellationToken, Task>? beforeRender = null,
+        int beforeRenderOnTurn = 1)
     {
         var nlu = new StubAiNluClient(analysis);
+        var rendered = new RenderedReplyCounter();
 
         services.AddSingleton<TimeProvider>(new FixedClock(ConversationsTestDoubles.Now));
         services.AddSingleton<IAiNluClient>(nlu);
+        services.AddSingleton(rendered);
         services.AddScoped<IConversationRenderer>(provider =>
         {
             var renderer = new DeterministicConversationRenderer(
@@ -76,7 +83,9 @@ internal static class RealRendererDoubles
                 provider.GetRequiredService<ICatalogProductDetails>(),
                 provider.GetRequiredService<IStorefrontBusinessInfo>());
 
-            return beforeRender is null ? renderer : new MutatingRenderer(renderer, beforeRender);
+            return beforeRender is null
+                ? renderer
+                : new MutatingRenderer(renderer, beforeRender, rendered, beforeRenderOnTurn);
         });
 
         return nlu;
@@ -84,20 +93,32 @@ internal static class RealRendererDoubles
 }
 
 /// <summary>
-/// The production renderer, with a one-shot hook in front of it. It is the seam that lets a test change a
-/// fact after the turn has already decided what to answer and before the reply re-reads the current facts.
+/// Counts the replies of one test host across every scope of that test. A turn is processed in its own
+/// scope, so the count has to live outside it for a hook to be able to name a later turn.
 /// </summary>
-internal sealed class MutatingRenderer(
-    IConversationRenderer inner,
-    Func<CancellationToken, Task> beforeRender) : IConversationRenderer
+internal sealed class RenderedReplyCounter
 {
     private int rendered;
 
+    public int Next() => Interlocked.Increment(ref rendered);
+}
+
+/// <summary>
+/// The production renderer, with a one-shot hook in front of one of its replies. It is the seam that lets a
+/// test change a fact after the turn has already decided what to answer and before the reply re-reads the
+/// current facts.
+/// </summary>
+internal sealed class MutatingRenderer(
+    IConversationRenderer inner,
+    Func<CancellationToken, Task> beforeRender,
+    RenderedReplyCounter counter,
+    int beforeRenderOnTurn) : IConversationRenderer
+{
     public async Task<ConversationRenderResult> RenderAsync(
         ConversationResponseIntent intent,
         CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Increment(ref rendered) == 1)
+        if (counter.Next() == beforeRenderOnTurn)
         {
             await beforeRender(cancellationToken);
         }

@@ -103,6 +103,101 @@ public sealed class ConversationRendererRevalidationTests(PostgresContainerFixtu
     }
 
     [Fact]
+    public async Task A_search_whose_routing_read_found_nothing_still_answers_a_variant_that_became_available()
+    {
+        var (_, variantId) = await SeedModelAsync(price: 2400m, quantity: 0);
+
+        await using var host = ConversationRendererHost.Start(
+            connectionString,
+            services => services.AddRealRenderer(
+                NluAnalysisResult.Success(Interpretation(NluIntent.ProductSearch, brand: "Dell")),
+                _ => SetQuantityAsync(variantId, 3)));
+
+        var result = await ProcessAsync(host, "wamid.late-stock");
+        var body = await OutboxBodyAsync(result.OutboxMessageId);
+
+        // The routing read found nothing because the variant had no stock at that moment. Stock arrived
+        // before the reply was built, and the final search the renderer runs immediately before the durable
+        // enqueue is what decides what the customer is shown, so the product is recommended after all.
+        Assert.Contains("2400", body, StringComparison.Ordinal);
+        Assert.Equal("1", await ShortlistCountAsync(result.ConversationId));
+    }
+
+    [Fact]
+    public async Task A_search_whose_routing_read_found_nothing_still_answers_a_price_inside_the_hard_ceiling()
+    {
+        var (_, variantId) = await SeedModelAsync(price: 2700m, quantity: 3);
+
+        await using var host = ConversationRendererHost.Start(
+            connectionString,
+            services => services.AddRealRenderer(
+                NluAnalysisResult.Success(Interpretation(
+                    NluIntent.ProductSearch,
+                    brand: "Dell",
+                    budgetType: NluBudgetType.Hard,
+                    budgetTarget: 2500m)),
+                _ => SetPriceAsync(variantId, 2400m)));
+
+        var result = await ProcessAsync(host, "wamid.late-budget");
+        var body = await OutboxBodyAsync(result.OutboxMessageId);
+
+        // The routing read excluded the variant because its price was above the ceiling. The price dropped
+        // inside the ceiling before the reply re-read the current facts, so the customer is offered it.
+        Assert.Contains("2400", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("الحد السعري", body, StringComparison.Ordinal);
+        Assert.Equal("1", await ShortlistCountAsync(result.ConversationId));
+    }
+
+    [Fact]
+    public async Task A_search_that_still_finds_nothing_answers_the_deterministic_no_match()
+    {
+        await SeedModelAsync(price: 2400m, quantity: 0);
+
+        await using var host = ConversationRendererHost.Start(
+            connectionString,
+            services => services.AddRealRenderer(
+                NluAnalysisResult.Success(Interpretation(NluIntent.ProductSearch, brand: "Dell"))));
+
+        var result = await ProcessAsync(host, "wamid.still-nothing");
+        var body = await OutboxBodyAsync(result.OutboxMessageId);
+
+        // Nothing current qualifies, so the final search still answers a deterministic no-match instead of
+        // inventing a list, and no shortlist becomes addressable.
+        Assert.Contains("ملقتش", body, StringComparison.Ordinal);
+        Assert.Equal("0", await ShortlistCountAsync(result.ConversationId));
+    }
+
+    [Fact]
+    public async Task A_search_whose_routing_read_found_nothing_keeps_the_previously_displayed_shortlist()
+    {
+        var (modelId, _) = await SeedModelAsync(price: 2400m, quantity: 3);
+
+        StubAiNluClient nlu = null!;
+        await using var host = ConversationRendererHost.Start(
+            connectionString,
+            services => nlu = services.AddRealRenderer(
+                NluAnalysisResult.Success(Interpretation(NluIntent.ProductSearch, brand: "Dell"))));
+
+        var first = await ProcessAsync(host, "wamid.keep-1");
+
+        Assert.Equal("1", await ShortlistCountAsync(first.ConversationId));
+
+        // The follow-up names a brand the catalogue does not hold, so the reply displays nothing and claims
+        // nothing new was shown.
+        nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.ProductSearch, brand: "Samsung"));
+
+        var second = await ProcessAsync(host, "wamid.keep-2");
+
+        Assert.Contains("ملقتش", await OutboxBodyAsync(second.OutboxMessageId), StringComparison.Ordinal);
+
+        // The list the customer really saw is still the list the conversation references.
+        Assert.Equal("1", await ShortlistCountAsync(second.ConversationId));
+        Assert.Equal(
+            modelId.ToString(CultureInfo.InvariantCulture),
+            await StateAsync(second.ConversationId, "state_json->>'lastModelId'"));
+    }
+
+    [Fact]
     public async Task SoftBudget_UsesCatalogConfiguredTolerance()
     {
         var (_, variantId) = await SeedModelAsync(price: 2900m, quantity: 3);
@@ -155,6 +250,61 @@ public sealed class ConversationRendererRevalidationTests(PostgresContainerFixtu
         // of being treated as a product that does not exist.
         Assert.Contains("غير متوفر", body, StringComparison.Ordinal);
         Assert.Contains("Dell", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_comparison_that_dropped_its_first_candidate_never_renumbers_the_survivors()
+    {
+        var first = await SeedModelAsync(price: 2400m, quantity: 3);
+        await SeedModelAsync(price: 2500m, quantity: 3);
+        await SeedModelAsync(price: 2600m, quantity: 3);
+
+        StubAiNluClient nlu = null!;
+        await using var host = ConversationRendererHost.Start(
+            connectionString,
+            services => nlu = services.AddRealRenderer(
+                NluAnalysisResult.Success(Interpretation(NluIntent.ProductSearch, brand: "Dell")),
+                // The candidate the customer heard first is retired while the comparison reply is being
+                // prepared, so the comparison really has to drop it.
+                _ => SetVariantActiveAsync(first.VariantId, false),
+                beforeRenderOnTurn: 2));
+
+        var search = await ProcessAsync(host, "wamid.compare-1");
+
+        Assert.Equal("3", await ShortlistCountAsync(search.ConversationId));
+
+        nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.ProductComparison));
+
+        var comparison = await ProcessAsync(host, "wamid.compare-2");
+        var body = await OutboxBodyAsync(comparison.OutboxMessageId);
+
+        var droppedCode = await catalog.ScalarAsync(
+            $"SELECT model_code FROM catalog.product_model WHERE id = {first.ModelId}");
+
+        Assert.DoesNotContain(droppedCode, body, StringComparison.Ordinal);
+
+        // Every survivor keeps its own identity instead of taking the position of a product that dropped
+        // out, so nothing in the text suggests a new first or second product.
+        var lines = body.Split('\n').Skip(1).ToList();
+
+        Assert.All(lines, line => Assert.StartsWith("* ", line, StringComparison.Ordinal));
+
+        // The comparison showed no list of its own, so the shortlist the search really showed is untouched.
+        Assert.Equal("3", await ShortlistCountAsync(comparison.ConversationId));
+        Assert.Equal(
+            first.ModelId.ToString(CultureInfo.InvariantCulture),
+            await StateAsync(comparison.ConversationId, "state_json->>'lastModelId'"));
+
+        // Positioning still addresses that stored list: the first position is the retired product, so the
+        // reference is answered with a deterministic no-match instead of silently becoming the product the
+        // comparison would have renumbered first.
+        nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.PriceCheck, reference: "first"));
+
+        var price = await ProcessAsync(host, "wamid.compare-3");
+        var priceBody = await OutboxBodyAsync(price.OutboxMessageId);
+
+        Assert.Contains("مش متاح", priceBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("2500", priceBody, StringComparison.Ordinal);
     }
 
     [Fact]

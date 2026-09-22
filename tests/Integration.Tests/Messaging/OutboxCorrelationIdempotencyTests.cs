@@ -123,9 +123,35 @@ public sealed class OutboxCorrelationIdempotencyTests(PostgresContainerFixture p
 
         Assert.NotNull(acceptance);
         Assert.Equal(stored.OutboxMessageId, acceptance.OutboxMessageId);
+        Assert.Equal(81, acceptance.ConversationId);
         Assert.Equal("the reply", acceptance.Body);
         Assert.Equal("""{"v":1}""", acceptance.ApplicationMetadata);
         Assert.True(acceptance.IsExisting);
+    }
+
+    [Fact]
+    public async Task A_duplicate_correlation_keeps_the_conversation_that_accepted_the_reply()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        var first = await AcceptAsync(host, "the first accepted reply", metadata: """{"v":1}""");
+
+        // A turn of another conversation replays the same correlation, and the acceptance it gets back has
+        // to report the conversation that really owns the durable reply rather than the one that asked.
+        var second = await AcceptAsync(
+            host,
+            "a reply of another conversation",
+            metadata: """{"v":1,"human":true}""",
+            conversationId: 82);
+
+        Assert.Equal(first.OutboxMessageId, second.OutboxMessageId);
+        Assert.Equal(81, second.ConversationId);
+        Assert.True(second.IsExisting);
+        Assert.Equal("the first accepted reply", second.Body);
+        Assert.Equal("""{"v":1}""", second.ApplicationMetadata);
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.outbox_message"));
+        Assert.Equal("81", await catalog.ScalarAsync(
+            "SELECT conversation_id FROM messaging.outbox_message"));
     }
 
     [Fact]
@@ -183,13 +209,14 @@ public sealed class OutboxCorrelationIdempotencyTests(PostgresContainerFixture p
         MessagingHost host,
         string body,
         string correlationId = Correlation,
-        string? metadata = null)
+        string? metadata = null,
+        long conversationId = 81)
     {
         await using var scope = host.CreateScope();
 
         return (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
             MessagingSamples.Outbound(
-                conversationId: 81,
+                conversationId: conversationId,
                 customerExternalId: "20100000811",
                 body: body,
                 correlationId: correlationId,
@@ -200,13 +227,14 @@ public sealed class OutboxCorrelationIdempotencyTests(PostgresContainerFixture p
         MessagingHost host,
         string body,
         string correlationId = Correlation,
-        string? metadata = null)
+        string? metadata = null,
+        long conversationId = 81)
     {
         await using var scope = host.CreateScope();
 
         return await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
             MessagingSamples.Outbound(
-                conversationId: 81,
+                conversationId: conversationId,
                 customerExternalId: "20100000811",
                 body: body,
                 correlationId: correlationId,

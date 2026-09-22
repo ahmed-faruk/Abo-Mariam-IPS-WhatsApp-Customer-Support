@@ -80,10 +80,12 @@ internal interface IConversationOperation : IAsyncDisposable
 {
     /// <summary>
     /// Reads the conversation mode as it is stored right now, not as this turn captured it when it
-    /// started. The answer is the final authorization: it decides whether an automatic reply may still
-    /// be produced.
+    /// started, together with the revision of that decision. The mode is the final authorization: it
+    /// decides whether an automatic reply may still be produced. The revision is what a handoff made
+    /// durable under this lock records, so a retry can tell that no later operator decision has replaced
+    /// it instead of re-applying an effect an operator has already overruled.
     /// </summary>
-    Task<string> ReloadModeAsync(CancellationToken cancellationToken);
+    Task<ConversationModeSnapshot> ReloadModeAsync(CancellationToken cancellationToken);
 
     /// <summary>
     /// Commits this operation's Conversations changes and releases the lock. A handle that is disposed
@@ -91,3 +93,11 @@ internal interface IConversationOperation : IAsyncDisposable
     /// </summary>
     Task CommitAsync(CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// The stored mode of one conversation at the moment a serialized operation reads it, and the revision of
+/// that decision. Both are read together from the row itself, so they always describe the same decision.
+/// </summary>
+/// <param name="Mode">The stored mode value, one of <c>AI</c>, <c>Human</c> or <c>Closed</c>.</param>
+/// <param name="ModeRevision">How many explicit mode decisions the conversation has had.</param>
+internal readonly record struct ConversationModeSnapshot(string Mode, long ModeRevision);

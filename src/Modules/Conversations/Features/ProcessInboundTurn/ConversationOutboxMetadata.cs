@@ -12,10 +12,11 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInbound
 /// </summary>
 /// <remarks>
 /// It is reference bookkeeping only: a version, the ordered identifiers of the products the stored reply
-/// displayed, and whether that reply is the acknowledgement that hands the conversation to a human. No
-/// price, quantity, grade, warranty, specification or business answer is ever written here, because those
-/// stay owned by Catalog and Storefront and are read again for every new reply. Messaging stores the
-/// serialized form verbatim and never parses it.
+/// displayed, whether that reply is the acknowledgement that hands the conversation to a human, and the
+/// revision of the mode that acknowledgement was authorized under. No price, quantity, grade, warranty,
+/// specification or business answer is ever written here, because those stay owned by Catalog and
+/// Storefront and are read again for every new reply. Messaging stores the serialized form verbatim and
+/// never parses it.
 /// </remarks>
 internal sealed record ConversationOutboxMetadata
 {
@@ -47,6 +48,16 @@ internal sealed record ConversationOutboxMetadata
     /// <summary>True when the stored reply is the acknowledgement that hands the conversation to a human.</summary>
     [JsonPropertyName("human")]
     public bool EntersHumanMode { get; init; }
+
+    /// <summary>
+    /// The revision of the conversation mode the acknowledgement was authorized under, or null for a reply
+    /// that changes no mode. A retry may apply a stored handoff only while the conversation's mode revision
+    /// is still this one, so a handoff that an operator has since overruled - a takeover, a release or a
+    /// close - is never applied a second time. Nothing in this payload says what the mode should become,
+    /// only which decision the stored acknowledgement belongs to.
+    /// </summary>
+    [JsonPropertyName("modeRevision")]
+    public long? ModeRevision { get; init; }
 
     /// <summary>The stored JSON of this payload, written the same way every time.</summary>
     public string ToJson() => JsonSerializer.Serialize(this, SerializerOptions);
@@ -89,7 +100,8 @@ internal sealed record ConversationOutboxMetadata
 
         if (metadata is null
             || metadata.Version != CurrentVersion
-            || !IsStructurallyValid(metadata.DisplayedCandidates))
+            || !IsStructurallyValid(metadata.DisplayedCandidates)
+            || !IsModeEffectStructurallyValid(metadata.EntersHumanMode, metadata.ModeRevision))
         {
             throw new InvalidOperationException(
                 $"The stored Outbox application metadata is not a version {CurrentVersion} payload, so the "
@@ -106,7 +118,8 @@ internal sealed record ConversationOutboxMetadata
     /// </exception>
     internal static ConversationOutboxMetadata For(
         IEnumerable<ConversationDisplayedCandidate> displayedCandidates,
-        bool entersHumanMode)
+        bool entersHumanMode,
+        long? modeRevision = null)
     {
         ArgumentNullException.ThrowIfNull(displayedCandidates);
 
@@ -118,11 +131,13 @@ internal sealed record ConversationOutboxMetadata
             })
             .ToArray();
 
-        if (!IsStructurallyValid(stored))
+        if (!IsStructurallyValid(stored)
+            || !IsModeEffectStructurallyValid(entersHumanMode, modeRevision))
         {
             throw new InvalidOperationException(
-                "A reply may only display a bounded, ordered list of distinct products, so this is not a "
-                + "valid version 1 payload and must not be stored.");
+                "A reply must carry a bounded, ordered list of distinct products and a mode effect with the "
+                + "mode revision it was authorized under, so this is not a valid version 1 payload and must "
+                + "not be stored.");
         }
 
         return new ConversationOutboxMetadata
@@ -130,6 +145,7 @@ internal sealed record ConversationOutboxMetadata
             Version = CurrentVersion,
             DisplayedCandidates = stored,
             EntersHumanMode = entersHumanMode,
+            ModeRevision = modeRevision,
         };
     }
 
@@ -155,6 +171,17 @@ internal sealed record ConversationOutboxMetadata
             && candidate.VariantId > 0
             && models.Add(candidate.ModelId));
     }
+
+    /// <summary>
+    /// The one shape a version 1 mode effect may have. A reply that hands the conversation to a human names
+    /// the mode revision its acknowledgement was authorized under, so the retry that reconciles it can tell
+    /// whether an operator has decided since; a revision of its own would be a precondition that cannot be
+    /// checked. A reply that changes no mode carries no revision at all.
+    /// </summary>
+    private static bool IsModeEffectStructurallyValid(bool entersHumanMode, long? modeRevision) =>
+        entersHumanMode
+            ? modeRevision is >= 0
+            : modeRevision is null;
 
     /// <summary>One displayed product of a stored reply. Names are single letters because the payload is
     /// bounded by the queue and read by nobody but this module.</summary>

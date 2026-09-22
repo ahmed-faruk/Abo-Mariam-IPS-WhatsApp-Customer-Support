@@ -132,17 +132,33 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
-    public async Task A_search_that_finds_nothing_displays_nothing_and_keeps_the_previous_list()
+    public async Task A_search_whose_routing_read_finds_nothing_still_carries_its_effective_query()
     {
         var harness = new RouterHarness();
         harness.Search.Results = [];
 
         var route = await harness.RouteAsync(
             NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                brand: "Dell",
+                budgetType: NluBudgetType.Hard,
+                budgetTarget: 2500),
             state: StateWithShortlist((5, 51)));
 
-        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
-        Assert.Equal(ConversationReasonCodes.NoMatchUnderFilters, route.Intent.ReasonCode);
+        // The read the router makes is a routing-time read and is not what the customer is shown: the reply
+        // carries the effective query, and the final search immediately before the durable enqueue decides
+        // whether anything is displayed. A product that became available or affordable meanwhile is
+        // therefore still recommended instead of being answered with a stale fixed no-match.
+        Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
+        Assert.Null(route.Intent.ReasonCode);
+
+        var effective = route.Intent.SearchQuery;
+
+        Assert.NotNull(effective);
+        Assert.Equal("Dell", effective.Brand);
+        Assert.Equal(BudgetType.Hard, effective.Budget!.Type);
+        Assert.Equal(2500, effective.Budget.Target);
 
         // The list the customer was already shown is untouched, and the turn claims no new one.
         Assert.Equal([5], route.State.Shortlist.Select(entry => entry.ModelId));
@@ -292,15 +308,17 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
-    public async Task A_search_that_finds_nothing_is_a_deterministic_no_match()
+    public async Task A_search_whose_routing_read_finds_nothing_still_claims_no_new_displayed_list()
     {
         var harness = new RouterHarness();
         harness.Search.Results = [];
 
         var route = await harness.RouteAsync(NluIntent.ProductSearch);
 
-        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
-        Assert.Equal(ConversationReasonCodes.NoMatchUnderFilters, route.Intent.ReasonCode);
+        // Nothing matched at routing time, so nothing is claimed to have been displayed: the final search
+        // the renderer runs is what either fills the accepted reply's list or answers a no-match.
+        Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
+        Assert.NotNull(route.Intent.SearchQuery);
         Assert.Empty(route.State.Shortlist);
         Assert.Null(route.State.LastModelId);
         Assert.Null(route.State.LastVariantId);

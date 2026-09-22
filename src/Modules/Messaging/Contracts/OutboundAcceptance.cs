@@ -7,6 +7,11 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// values it tried to write, because an already accepted reply is never rewritten.
 /// </summary>
 /// <param name="OutboxMessageId">The durable identity of the stored reply.</param>
+/// <param name="ConversationId">
+/// The conversation that accepted the stored reply, exactly as the row holds it. It is the stored value
+/// rather than the caller's, because a correlation that already has a row keeps the conversation that
+/// created it: a caller whose own conversation differs is looking at somebody else's durable reply.
+/// </param>
 /// <param name="Body">The immutable reply text of that row.</param>
 /// <param name="ApplicationMetadata">The immutable opaque metadata of that row, or null when it has none.</param>
 /// <param name="IsExisting">
@@ -15,6 +20,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// </param>
 public sealed record OutboundAcceptance(
     long OutboxMessageId,
+    long ConversationId,
     string Body,
     string? ApplicationMetadata,
     bool IsExisting);

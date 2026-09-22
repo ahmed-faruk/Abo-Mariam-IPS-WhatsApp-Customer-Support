@@ -182,6 +182,12 @@ internal sealed class DeterministicConversationRenderer(
     /// whose model or variant is gone or retired is dropped instead of being compared from stale values;
     /// the survivors keep the order the customer heard. Fewer than two survivors is not a comparison, so
     /// the deterministic no-match answers instead.
+    /// <para>
+    /// The survivors are named by their own identity and never by a position. A comparison stores no
+    /// displayed list, so the conversation keeps the shortlist of the search it really showed, and a
+    /// comparison that renumbered its survivors would make "the first one" name one product here and a
+    /// different one on the next turn.
+    /// </para>
     /// </summary>
     private async Task<ConversationRenderResult> CompareAsync(
         ConversationResponseIntent intent,
@@ -211,7 +217,7 @@ internal sealed class DeterministicConversationRenderer(
 
             lines.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{lines.Count + 1}. {details.DisplayName} ({details.ModelCode}) - "
+                $"* {details.DisplayName} ({details.ModelCode}) - "
                 + $"{Money(variant.Price)} جنيه | الجريد: {variant.Grade} | "
                 + $"الضمان: {variant.WarrantyDays} يوم | الحالة: {Availability(variant)}"));
         }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
@@ -98,7 +99,10 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
                     Correlation,
                     "AI",
                     "handoff acknowledgement",
-                    ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson()))).OutboxMessageId;
+                    ConversationOutboxMetadata.For(
+                        [],
+                        entersHumanMode: true,
+                        modeRevision: await RevisionAsync(created.ConversationId)).ToJson()))).OutboxMessageId;
         }
 
         doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
@@ -139,7 +143,10 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
                     Correlation,
                     "AI",
                     "handoff acknowledgement",
-                    ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson()))).OutboxMessageId;
+                    ConversationOutboxMetadata.For(
+                        [],
+                        entersHumanMode: true,
+                        modeRevision: await RevisionAsync(created.ConversationId)).ToJson()))).OutboxMessageId;
         }
 
         doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
@@ -153,6 +160,156 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
         Assert.Equal("Human", await ModeAsync(result.ConversationId));
         Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
         Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
+    public async Task An_accepted_handoff_is_never_reapplied_after_the_operator_released_the_conversation()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = ConversationsHost.Start(
+            connectionString,
+            services => doubles = services.AddConversationDoubles(
+                NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+                renderedBody: "the deterministic reply"));
+
+        var created = await ProcessAsync(host, "wamid.handoff-released-before");
+
+        // An earlier attempt of the retried turn stored the handoff acknowledgement under the mode decision
+        // the conversation was on, and then died before its Conversations change was committed.
+        long storedId;
+
+        await using (var scope = host.CreateScope())
+        {
+            storedId = (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+                new OutboundMessageRequest(
+                    created.ConversationId,
+                    Customer,
+                    Correlation,
+                    "AI",
+                    "handoff acknowledgement",
+                    ConversationOutboxMetadata.For(
+                        [],
+                        entersHumanMode: true,
+                        modeRevision: await RevisionAsync(created.ConversationId)).ToJson()))).OutboxMessageId;
+        }
+
+        // The operator then takes the conversation over and releases it back to the assistant, which are two
+        // explicit mode decisions the acknowledgement knows nothing about.
+        await using (var scope = host.CreateScope())
+        {
+            var modeControl = scope.ServiceProvider.GetRequiredService<IConversationModeControl>();
+
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await modeControl.TakeOverAsync(created.ConversationId));
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await modeControl.ReleaseToAiAsync(created.ConversationId));
+        }
+
+        var renderCalls = doubles.Renderer.Intents.Count;
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+
+        var result = await ProcessAsync(host, Correlation);
+
+        // The stored acknowledgement is reconciled - its lifecycle and its list - but the effect it recorded
+        // belongs to a mode decision the operator has already replaced, so the conversation stays automatic.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal("AI", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
+    public async Task An_accepted_handoff_never_reopens_a_conversation_closed_while_the_retry_runs()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = ConversationsHost.Start(
+            connectionString,
+            services => doubles = services.AddConversationDoubles(
+                NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+                renderedBody: "the deterministic reply"));
+
+        var created = await ProcessAsync(host, "wamid.handoff-closed-before");
+
+        await using (var scope = host.CreateScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+                new OutboundMessageRequest(
+                    created.ConversationId,
+                    Customer,
+                    Correlation,
+                    "AI",
+                    "handoff acknowledgement",
+                    ConversationOutboxMetadata.For(
+                        [],
+                        entersHumanMode: true,
+                        modeRevision: await RevisionAsync(created.ConversationId)).ToJson()));
+        }
+
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // The retry starts while the conversation is still automatic, and the operator closes it while the
+        // message is being interpreted - after the acknowledgement was already durable.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+        doubles.Nlu.Gate = gate;
+
+        var turn = ProcessAsync(host, Correlation);
+        await doubles.Nlu.Entered;
+
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await scope.ServiceProvider.GetRequiredService<IConversationModeControl>()
+                    .CloseAsync(created.ConversationId));
+        }
+
+        gate.SetResult();
+        var result = await turn;
+
+        // The already accepted acknowledgement is reconciled, but the operator's close is the later decision:
+        // the conversation is never reopened, and no new reply is rendered for it.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal("Closed", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
+    public async Task Only_explicit_operator_mode_decisions_advance_the_mode_revision()
+    {
+        await using var host = StartHost(services => services.AddConversationDoubles(
+            NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+            renderedBody: "the deterministic reply"));
+
+        var created = await ProcessAsync(host, "wamid.revision-before");
+
+        // An ordinary automatic turn records a message, a window and a reply, and decides no mode.
+        Assert.Equal("0", await catalog.ScalarAsync(
+            $"SELECT mode_revision FROM conversations.conversation WHERE id = {created.ConversationId}"));
+
+        await using var scope = host.CreateScope();
+        var modeControl = scope.ServiceProvider.GetRequiredService<IConversationModeControl>();
+
+        Assert.Equal(ConversationModeChangeOutcome.Changed, await modeControl.TakeOverAsync(created.ConversationId));
+        Assert.Equal("1", await catalog.ScalarAsync(
+            $"SELECT mode_revision FROM conversations.conversation WHERE id = {created.ConversationId}"));
+
+        // Taking over a conversation a human already owns decides nothing, so it advances nothing.
+        Assert.Equal(
+            ConversationModeChangeOutcome.Unchanged,
+            await modeControl.TakeOverAsync(created.ConversationId));
+        Assert.Equal("1", await catalog.ScalarAsync(
+            $"SELECT mode_revision FROM conversations.conversation WHERE id = {created.ConversationId}"));
+
+        Assert.Equal(
+            ConversationModeChangeOutcome.Changed,
+            await modeControl.ReleaseToAiAsync(created.ConversationId));
+        Assert.Equal("2", await catalog.ScalarAsync(
+            $"SELECT mode_revision FROM conversations.conversation WHERE id = {created.ConversationId}"));
     }
 
     [Fact]
@@ -273,6 +430,13 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
 
     private Task<string> ModeAsync(long conversationId) =>
         catalog.ScalarAsync($"SELECT mode FROM conversations.conversation WHERE id = {conversationId}");
+
+    /// <summary>How many explicit mode decisions the stored conversation has had.</summary>
+    private async Task<long> RevisionAsync(long conversationId) =>
+        long.Parse(
+            await catalog.ScalarAsync(
+                $"SELECT mode_revision FROM conversations.conversation WHERE id = {conversationId}"),
+            CultureInfo.InvariantCulture);
 
     private Task<string> OutboxCountAsync() =>
         catalog.ScalarAsync("SELECT count(*) FROM messaging.outbox_message");

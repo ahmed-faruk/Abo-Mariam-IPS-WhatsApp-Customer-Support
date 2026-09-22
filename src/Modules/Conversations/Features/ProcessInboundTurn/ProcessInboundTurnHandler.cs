@@ -17,6 +17,9 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInbound
 /// provider message id, Messaging refuses to store a second reply for it, and a turn whose reply was
 /// already stored reconciles that immutable reply instead of rendering a new one. That reconciliation runs
 /// before the mode and window gates, because a reply that is already durable is not a new free-form send.
+/// It also runs only for the conversation that accepted the reply: a stored reply belongs to the
+/// conversation it answered, so a retry of the same inbound that resolves to a different one stops without
+/// recording anything rather than carrying that reply over.
 /// </summary>
 internal sealed class ProcessInboundTurnHandler(
     IConversationTurnStore store,
@@ -44,6 +47,19 @@ internal sealed class ProcessInboundTurnHandler(
             turn.ConversationId,
             now,
             cancellationToken);
+
+        // A reply is durable against the conversation that accepted it, and only that conversation may
+        // reconcile it. An earlier attempt of this inbound may already have stored one while the operator
+        // has closed the conversation it answered, so this retry resolves to a new active conversation
+        // instead. The stored reply belongs to the closed one and must not be reconciled onto the new one,
+        // which means the turn stops here: no lifecycle, no service window, no interpretation, no renderer
+        // and no reply of this old message may land on a conversation that never answered it.
+        if (await outbox.FindByCorrelationAsync(turn.ProviderMessageId, cancellationToken)
+            is { } historical
+            && historical.ConversationId != context.ConversationId)
+        {
+            return Result(context, ConversationTurnOutcome.NoResponse);
+        }
 
         // An accepted inbound always refreshes the lifecycle and the 24-hour service window, whatever
         // the mode is, because the window is what later allows a free-form reply at all.
@@ -79,8 +95,9 @@ internal sealed class ProcessInboundTurnHandler(
         await using var operation = await store.BeginFinalOperationAsync(
             context.ConversationId,
             cancellationToken);
-        var authorizedMode = await operation.ReloadModeAsync(cancellationToken);
-        context.Mode = authorizedMode;
+        var authorized = await operation.ReloadModeAsync(cancellationToken);
+        context.Mode = authorized.Mode;
+        context.ModeRevision = authorized.ModeRevision;
 
         // An earlier attempt of this same turn may already have stored its reply. That reply is immutable
         // and is what the customer received, so the retry reconciles it instead of rendering again from
@@ -100,7 +117,7 @@ internal sealed class ProcessInboundTurnHandler(
             return Result(context, ConversationTurnOutcome.ResponseEnqueued, accepted.OutboxMessageId);
         }
 
-        if (!ConversationModeRules.AnswersAutomatically(authorizedMode))
+        if (!ConversationModeRules.AnswersAutomatically(authorized.Mode))
         {
             // An operator closed the conversation or took it over while this turn was being prepared. The
             // new reply is dropped rather than enqueued: nothing is sent on behalf of a conversation the
@@ -148,7 +165,12 @@ internal sealed class ProcessInboundTurnHandler(
             return Result(context, ConversationTurnOutcome.NoResponse);
         }
 
-        var metadata = ConversationOutboxMetadata.For(rendered.DisplayedCandidates, handoff);
+        // A handoff records the mode revision it is authorized under, so a later retry can tell whether an
+        // operator has decided since and must not re-apply it. A reply that changes no mode records none.
+        var metadata = ConversationOutboxMetadata.For(
+            rendered.DisplayedCandidates,
+            handoff,
+            handoff ? context.ModeRevision : null);
         var stored = await outbox.EnqueueAsync(
             new OutboundMessageRequest(
                 context.ConversationId,
@@ -192,7 +214,9 @@ internal sealed class ProcessInboundTurnHandler(
         await using var operation = await store.BeginFinalOperationAsync(
             context.ConversationId,
             cancellationToken);
-        context.Mode = await operation.ReloadModeAsync(cancellationToken);
+        var authorized = await operation.ReloadModeAsync(cancellationToken);
+        context.Mode = authorized.Mode;
+        context.ModeRevision = authorized.ModeRevision;
 
         if (await outbox.FindByCorrelationAsync(turn.ProviderMessageId, cancellationToken) is not { } accepted)
         {
@@ -228,6 +252,10 @@ internal sealed class ProcessInboundTurnHandler(
     /// version carries none, and this attempt's freshly computed route is not proof of what that older
     /// immutable body represented, so a null payload never changes the mode or the displayed list: its row
     /// is still reused, but the conversation keeps the mode and the references the operator last chose.
+    /// A stored handoff is applied only while the conversation's mode revision is still the one the
+    /// acknowledgement was authorized under. An operator takeover, release or close has advanced that
+    /// revision since, and the operator's newer decision is the stronger one, so the historical
+    /// acknowledgement is reconciled without moving the mode back.
     /// </remarks>
     /// <param name="applyStoredModeEffect">
     /// True when this reconciliation completes the mode effect of a reply this turn may still act on, which
@@ -243,14 +271,29 @@ internal sealed class ProcessInboundTurnHandler(
         bool applyStoredModeEffect,
         CancellationToken cancellationToken)
     {
+        // Only the conversation that accepted a reply may reconcile it. Every caller checks the ownership of
+        // the row it found, and this repeats the invariant where the reconciliation really happens, because a
+        // correlation that is answered by another conversation is not a shape any supported path produces:
+        // the turn fails loudly instead of attaching somebody else's reply to this conversation.
+        if (accepted.ConversationId != context.ConversationId)
+        {
+            throw new InvalidOperationException(
+                $"The durable Outbox reply {accepted.OutboxMessageId} was accepted by the conversation "
+                + $"{accepted.ConversationId}, so it cannot be reconciled onto the conversation "
+                + $"{context.ConversationId}.");
+        }
+
         var metadata = ConversationOutboxMetadata.Parse(accepted.ApplicationMetadata);
 
         // The acknowledgement is durable now, so the conversation may become Human. A crash between the
         // enqueue and this commit is safe: the retried turn reuses this same Outbox row and reads the same
         // effect from the metadata it stored with it. A handoff never reopens a conversation an operator has
-        // closed in the meantime, and never overwrites the mode an operator has already chosen.
+        // closed in the meantime, and never overwrites the mode an operator has already chosen: the stored
+        // effect names the mode revision it belongs to, so a decision made since - a takeover, a release or
+        // a close - leaves the conversation exactly as the operator put it.
         if (applyStoredModeEffect
-            && metadata is { EntersHumanMode: true }
+            && metadata is { EntersHumanMode: true, ModeRevision: { } authorizedRevision }
+            && context.ModeRevision == authorizedRevision
             && ConversationModeRules.AfterHandoff(context.Mode) is { } handoffMode
             && !string.Equals(handoffMode, context.Mode, StringComparison.Ordinal))
         {

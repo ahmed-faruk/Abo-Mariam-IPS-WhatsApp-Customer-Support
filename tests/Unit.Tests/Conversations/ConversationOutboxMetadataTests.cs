@@ -16,13 +16,15 @@ public sealed class ConversationOutboxMetadataTests
     {
         var metadata = ConversationOutboxMetadata.For(
             [new ConversationDisplayedCandidate(10, 21), new ConversationDisplayedCandidate(11, 25)],
-            entersHumanMode: true);
+            entersHumanMode: true,
+            modeRevision: 4);
 
         var parsed = ConversationOutboxMetadata.Parse(metadata.ToJson());
 
         Assert.NotNull(parsed);
         Assert.Equal(ConversationOutboxMetadata.CurrentVersion, parsed.Version);
         Assert.True(parsed.EntersHumanMode);
+        Assert.Equal(4, parsed.ModeRevision);
         Assert.Equal(
             [(10L, 21L), (11L, 25L)],
             parsed.DisplayedCandidates.Select(candidate => (candidate.ModelId, candidate.VariantId)));
@@ -37,7 +39,30 @@ public sealed class ConversationOutboxMetadataTests
         Assert.NotNull(parsed);
         Assert.Empty(parsed.DisplayedCandidates);
         Assert.False(parsed.EntersHumanMode);
+
+        // A reply that changes no mode names no mode decision it belongs to.
+        Assert.Null(parsed.ModeRevision);
     }
+
+    [Fact]
+    public void A_handoff_is_never_written_without_the_mode_revision_it_belongs_to() =>
+        Assert.Throws<InvalidOperationException>(() => ConversationOutboxMetadata.For(
+            [],
+            entersHumanMode: true));
+
+    [Fact]
+    public void A_reply_that_changes_no_mode_never_records_a_mode_revision() =>
+        Assert.Throws<InvalidOperationException>(() => ConversationOutboxMetadata.For(
+            [],
+            entersHumanMode: false,
+            modeRevision: 3));
+
+    [Fact]
+    public void A_handoff_whose_recorded_revision_is_impossible_is_never_written() =>
+        Assert.Throws<InvalidOperationException>(() => ConversationOutboxMetadata.For(
+            [],
+            entersHumanMode: true,
+            modeRevision: -1));
 
     [Theory]
     [InlineData(null)]
@@ -73,5 +98,12 @@ public sealed class ConversationOutboxMetadataTests
     [InlineData("""{"v":1,"displayed":[{"m":10,"v":21},{"m":10,"v":21}]}""")]
     [InlineData("""{"v":1,"displayed":[{"m":10,"v":21},{"m":10,"v":25}]}""")]
     public void A_stored_payload_that_names_one_model_twice_is_an_invariant_failure(string json) =>
+        Assert.Throws<InvalidOperationException>(() => ConversationOutboxMetadata.Parse(json));
+
+    [Theory]
+    [InlineData("""{"v":1,"human":true}""")]
+    [InlineData("""{"v":1,"human":true,"modeRevision":-2}""")]
+    [InlineData("""{"v":1,"human":false,"modeRevision":2}""")]
+    public void A_stored_payload_whose_mode_effect_cannot_be_checked_is_an_invariant_failure(string json) =>
         Assert.Throws<InvalidOperationException>(() => ConversationOutboxMetadata.Parse(json));
 }

@@ -2,6 +2,7 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 using WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInboundTurn;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 
 namespace WhatsAppMonitorAssistant.Unit.Tests.Conversations;
 
@@ -521,7 +522,10 @@ public sealed class ProcessInboundTurnTests
         harness.Outbox.PreStore(
             "wamid.replay-handoff",
             "handoff acknowledgement",
-            ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson());
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
 
         var result = await harness.ProcessAsync(
             ConversationSamples.Text(providerMessageId: "wamid.replay-handoff"));
@@ -685,7 +689,10 @@ public sealed class ProcessInboundTurnTests
         harness.Outbox.PreStore(
             "wamid.replay-closed-mode",
             "handoff acknowledgement",
-            ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson());
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
 
         // The operator closes the conversation while this turn is being prepared, after the earlier attempt
         // had already stored the acknowledgement.
@@ -764,7 +771,10 @@ public sealed class ProcessInboundTurnTests
         harness.Outbox.PreStore(
             "wamid.non-automatic-handoff",
             "handoff acknowledgement",
-            ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson());
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
 
         var result = await harness.ProcessAsync(ConversationSamples.Text(
             body: "عايز أكلم حد",
@@ -800,6 +810,104 @@ public sealed class ProcessInboundTurnTests
         Assert.Equal(0, harness.Nlu.CallCount);
         Assert.Empty(harness.Renderer.Intents);
         Assert.Empty(harness.Outbox.Requests);
+        Assert.Equal([5], harness.Store.State.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(5, harness.Store.State.LastModelId);
+        Assert.Equal(51, harness.Store.State.LastVariantId);
+    }
+
+    [Fact]
+    public async Task A_reply_accepted_by_another_conversation_is_never_reconciled_onto_this_one()
+    {
+        var harness = StartSearchHarness();
+        harness.Store.State = PreviouslyShown((5, 51));
+
+        // The durable reply of this correlation belongs to the conversation an earlier attempt answered,
+        // not to the one this retry resolves to: the operator closed that conversation and this turn opened
+        // a new active one. Nothing of that reply may land on the new conversation.
+        harness.Outbox.PreStore(
+            "wamid.foreign-reply",
+            "already shown",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson(),
+            conversationId: KnownConversationId + 1);
+
+        var result = await harness.ProcessAsync(
+            ConversationSamples.Text(providerMessageId: "wamid.foreign-reply"));
+
+        Assert.Equal(ConversationTurnOutcome.NoResponse, result.Outcome);
+        Assert.Null(result.OutboxMessageId);
+        Assert.Equal(ConversationModes.Ai, harness.Store.Mode);
+        Assert.Equal(0, harness.Store.ModeChangeCount);
+        Assert.Equal(0, harness.Nlu.CallCount);
+        Assert.Empty(harness.Renderer.Intents);
+        Assert.Empty(harness.Outbox.Requests);
+        Assert.Null(harness.Store.LastOutboundRecordedAt);
+        Assert.Equal([5], harness.Store.State.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(5, harness.Store.State.LastModelId);
+
+        // The old inbound of another conversation is not recorded here either: no lifecycle, no commit, and
+        // no service window refreshed from its provider timestamp.
+        Assert.Null(harness.Store.AcceptedAt);
+        Assert.Equal(0, harness.Store.CommitCount);
+    }
+
+    [Fact]
+    public async Task A_reply_accepted_by_another_conversation_is_not_reconciled_by_a_human_conversation_either()
+    {
+        var harness = StartSearchHarness();
+        harness.Store.Mode = ConversationModes.Human;
+        harness.Store.State = PreviouslyShown((5, 51));
+        harness.Outbox.PreStore(
+            "wamid.foreign-human-reply",
+            "already shown",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: false).ToJson(),
+            conversationId: KnownConversationId + 1);
+
+        var result = await harness.ProcessAsync(
+            ConversationSamples.Text(providerMessageId: "wamid.foreign-human-reply"));
+
+        Assert.Equal(ConversationTurnOutcome.NoResponse, result.Outcome);
+        Assert.Null(result.OutboxMessageId);
+        Assert.Equal(ConversationModes.Human, harness.Store.Mode);
+        Assert.Equal(0, harness.Nlu.CallCount);
+        Assert.Empty(harness.Renderer.Intents);
+        Assert.Empty(harness.Outbox.Requests);
+        Assert.Null(harness.Store.LastOutboundRecordedAt);
+        Assert.Equal([5], harness.Store.State.Shortlist.Select(entry => entry.ModelId));
+        Assert.Equal(5, harness.Store.State.LastModelId);
+        Assert.Null(harness.Store.AcceptedAt);
+        Assert.Equal(0, harness.Store.CommitCount);
+    }
+
+    [Fact]
+    public async Task An_enqueue_that_loses_to_a_reply_of_another_conversation_fails_the_turn_loudly()
+    {
+        var harness = StartSearchHarness();
+        harness.Store.State = PreviouslyShown((5, 51));
+
+        // The correlation was absent when this turn read it, and the row that won it belongs to another
+        // conversation. That reply may not be reconciled onto this one and no second reply may be created
+        // for it, so the turn fails loudly instead of quietly adopting somebody else's reply.
+        harness.Outbox.ConflictingAcceptance = new OutboundAcceptance(
+            KnownOutboxMessageId,
+            KnownConversationId + 1,
+            "already shown",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson(),
+            IsExisting: true);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.ProcessAsync(
+            ConversationSamples.Text(providerMessageId: "wamid.conflicting-enqueue")));
+
+        Assert.Equal(ConversationModes.Ai, harness.Store.Mode);
+        Assert.Equal(0, harness.Store.ModeChangeCount);
+        Assert.Null(harness.Store.LastOutboundRecordedAt);
         Assert.Equal([5], harness.Store.State.Shortlist.Select(entry => entry.ModelId));
         Assert.Equal(5, harness.Store.State.LastModelId);
         Assert.Equal(51, harness.Store.State.LastVariantId);
@@ -859,7 +967,10 @@ public sealed class ProcessInboundTurnTests
         harness.Outbox.PreStore(
             "wamid.handoff-released",
             "handoff acknowledgement",
-            ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson());
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
 
         harness.Store.OnBeginFinalOperation = () => harness.Store.Mode = ConversationModes.Ai;
 
@@ -878,6 +989,154 @@ public sealed class ProcessInboundTurnTests
         Assert.Empty(harness.Renderer.Intents);
         Assert.Empty(harness.Outbox.Requests);
         Assert.NotNull(harness.Store.LastOutboundRecordedAt);
+    }
+
+    [Fact]
+    public async Task A_stored_handoff_reply_never_overrides_a_mode_the_operator_decided_after_it()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.HumanHandoff)));
+
+        // An earlier attempt of this inbound stored the handoff acknowledgement while the conversation was
+        // still automatic, so the row records the mode decision it was authorized under.
+        harness.Outbox.PreStore(
+            "wamid.handoff-superseded",
+            "handoff acknowledgement",
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
+
+        // Before the retried turn reaches its final section the operator takes the conversation over and
+        // releases it back to the assistant: two explicit decisions later than the acknowledgement, and the
+        // retry therefore starts automatic again.
+        harness.Store.OnBeginFinalOperation = () =>
+        {
+            harness.Store.OperatorDecides(ConversationModes.Human);
+            harness.Store.OperatorDecides(ConversationModes.Ai);
+        };
+
+        var result = await harness.ProcessAsync(ConversationSamples.Text(
+            body: "عايز أكلم حد",
+            providerMessageId: "wamid.handoff-superseded"));
+
+        // The stored reply is still reconciled, but the mode effect it recorded belongs to a decision the
+        // operator has already replaced, so the conversation is left exactly where the operator put it.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(KnownOutboxMessageId, result.OutboxMessageId);
+        Assert.Equal(ConversationMode.Ai, result.Mode);
+        Assert.Equal(ConversationModes.Ai, harness.Store.Mode);
+        Assert.Equal(0, harness.Store.ModeChangeCount);
+        Assert.Equal(2, harness.Store.ModeRevision);
+        Assert.Empty(harness.Renderer.Intents);
+        Assert.Empty(harness.Outbox.Requests);
+        Assert.NotNull(harness.Store.LastOutboundRecordedAt);
+    }
+
+    [Fact]
+    public async Task A_stored_handoff_reply_still_completes_while_the_revision_it_names_is_current()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.Greeting)));
+
+        // The operator took the conversation over and released it again before this acknowledgement was
+        // stored, so the acknowledgement belongs to the decision that left behind, not to the first one.
+        harness.Store.OperatorDecides(ConversationModes.Human);
+        harness.Store.OperatorDecides(ConversationModes.Ai);
+
+        harness.Outbox.PreStore(
+            "wamid.handoff-unchanged",
+            "handoff acknowledgement",
+            ConversationOutboxMetadata.For(
+                [],
+                entersHumanMode: true,
+                modeRevision: harness.Store.ModeRevision).ToJson());
+
+        var result = await harness.ProcessAsync(
+            ConversationSamples.Text(providerMessageId: "wamid.handoff-unchanged"));
+
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(ConversationModes.Human, harness.Store.Mode);
+        Assert.Equal(3, harness.Store.ModeRevision);
+        Assert.Empty(harness.Renderer.Intents);
+    }
+
+    [Fact]
+    public async Task A_handoff_that_was_already_applied_is_not_applied_again_by_a_later_retry()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.HumanHandoff)));
+        var turn = ConversationSamples.Text(providerMessageId: "wamid.handoff-idempotent");
+
+        await harness.ProcessAsync(turn);
+
+        Assert.Equal(ConversationModes.Human, harness.Store.Mode);
+        Assert.Equal(1, harness.Store.ModeRevision);
+
+        var rendered = harness.Renderer.Intents.Count;
+
+        var retried = await harness.ProcessAsync(turn);
+
+        // The acknowledgement is durable and its effect is already committed, so the retry reconciles it
+        // without deciding the mode a second time.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, retried.Outcome);
+        Assert.Equal(ConversationModes.Human, harness.Store.Mode);
+        Assert.Equal(1, harness.Store.ModeRevision);
+        Assert.Single(harness.Outbox.Requests);
+        Assert.Equal(rendered, harness.Renderer.Intents.Count);
+    }
+
+    [Fact]
+    public async Task A_successful_handoff_records_the_mode_decision_it_was_authorized_under()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.HumanHandoff)));
+
+        // The operator already took the conversation over once and released it, so the acknowledgement is
+        // authorized under a revision that is not zero.
+        harness.Store.OperatorDecides(ConversationModes.Human);
+        harness.Store.OperatorDecides(ConversationModes.Ai);
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.handoff-revision"));
+
+        var stored = Assert.Single(harness.Outbox.Requests);
+        var metadata = ConversationOutboxMetadata.Parse(stored.ApplicationMetadata);
+
+        Assert.NotNull(metadata);
+        Assert.True(metadata.EntersHumanMode);
+        Assert.Equal(2, metadata.ModeRevision);
+
+        // Applying the handoff is itself one mode decision.
+        Assert.Equal(ConversationModes.Human, harness.Store.Mode);
+        Assert.Equal(3, harness.Store.ModeRevision);
+    }
+
+    [Fact]
+    public async Task An_ordinary_inbound_turn_never_advances_the_mode_revision()
+    {
+        var harness = StartSearchHarness();
+
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.revision-1"));
+        await harness.ProcessAsync(ConversationSamples.Text(providerMessageId: "wamid.revision-2"));
+
+        // Recording inbound messages, writing the UX state and recording the outbound lifecycle are not
+        // mode decisions, so they never invalidate the revision a stored handoff is checked against.
+        Assert.Equal(0, harness.Store.ModeRevision);
+        Assert.Equal(0, harness.Store.ModeChangeCount);
+    }
+
+    [Fact]
+    public async Task A_stored_handoff_without_the_mode_revision_it_belongs_to_fails_the_turn()
+    {
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.HumanHandoff)));
+        harness.Outbox.PreStore("wamid.handoff-unversioned", "handoff acknowledgement", """{"v":1,"human":true}""");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.ProcessAsync(
+            ConversationSamples.Text(providerMessageId: "wamid.handoff-unversioned")));
+
+        Assert.Equal(ConversationModes.Ai, harness.Store.Mode);
+        Assert.Empty(harness.Renderer.Intents);
     }
 
     [Fact]
@@ -1231,6 +1490,7 @@ public sealed class ProcessInboundTurnTests
             var outbox = new RecordingOutboundMessageQueue
             {
                 NextMessageId = KnownOutboxMessageId,
+                ConversationId = KnownConversationId,
                 Journal = journal,
             };
             var search = new FakeCatalogSearch();
