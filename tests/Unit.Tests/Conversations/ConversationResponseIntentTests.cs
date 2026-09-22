@@ -1,4 +1,5 @@
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
+using WhatsAppMonitorAssistant.Modules.Catalog.Contracts;
 
 namespace WhatsAppMonitorAssistant.Unit.Tests.Conversations;
 
@@ -54,6 +55,53 @@ public sealed class ConversationResponseIntentTests
         Assert.Null(intent.ModelIds as List<long>);
         Assert.True(exposed.IsReadOnly);
         Assert.IsType<NotSupportedException>(Record.Exception(() => exposed.Add(11)));
+    }
+
+    [Fact]
+    public void A_caller_that_mutates_the_query_it_passed_cannot_change_the_effective_search()
+    {
+        var ports = new List<string> { "HDMI" };
+        var grades = new List<string> { "A" };
+        var query = new ProductSearchQuery
+        {
+            Brand = "Dell",
+            SizeInches = 24,
+            RequiredPorts = ports,
+            Grades = grades,
+            Budget = ProductBudget.Hard(2500),
+        };
+
+        var intent = Reply().WithSearchQuery(query);
+
+        ports.Add("VGA");
+        grades.Clear();
+
+        var effective = intent.SearchQuery;
+
+        Assert.NotNull(effective);
+        Assert.Equal(["HDMI"], effective.RequiredPorts);
+        Assert.Equal(["A"], effective.Grades);
+        Assert.Equal("Dell", effective.Brand);
+        Assert.Equal(24, effective.SizeInches);
+        Assert.Equal(BudgetType.Hard, effective.Budget!.Type);
+        Assert.Equal(2500, effective.Budget.Target);
+
+        // The snapshot is a copy, so the caller's own query is not the one the renderer would run.
+        Assert.NotSame(query, effective);
+    }
+
+    [Fact]
+    public void A_range_budget_survives_the_effective_search_snapshot()
+    {
+        var intent = Reply().WithSearchQuery(
+            new ProductSearchQuery { Budget = ProductBudget.Range(1000m, 2000m) });
+
+        var effective = intent.SearchQuery;
+
+        Assert.NotNull(effective);
+        Assert.Equal(BudgetType.Range, effective.Budget!.Type);
+        Assert.Equal(1000, effective.Budget.Min);
+        Assert.Equal(2000, effective.Budget.Max);
     }
 
     private static ConversationResponseIntent Reply() =>

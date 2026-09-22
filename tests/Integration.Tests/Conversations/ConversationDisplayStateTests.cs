@@ -4,7 +4,9 @@ using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Catalog.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Domain;
+using WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInboundTurn;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Conversations;
 
@@ -77,7 +79,7 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
     public async Task A_search_of_the_fail_closed_renderer_does_not_make_a_shortlist_addressable()
     {
         ConversationDoubles doubles = null!;
-        await using var host = StartSearchHost(d => doubles = d, includeRenderer: false);
+        await using var host = StartSearchHost(d => doubles = d, includeRenderer: false, failClosedRenderer: true);
 
         var search = await ProcessAsync(host, "wamid.display-unbound");
 
@@ -122,9 +124,161 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
         Assert.Equal("10", await StateAsync(conversationId, "state_json->>'lastModelId'"));
     }
 
+    [Fact]
+    public async Task A_search_retry_after_the_window_closed_still_reconciles_the_reply_it_already_stored()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = StartSearchHost(d => doubles = d);
+
+        var created = await ProcessAsync(host, "wamid.closed-retry-first");
+        var storedId = await StoreAcceptedReplyAsync(
+            host,
+            created.ConversationId,
+            "wamid.closed-retry",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21), new ConversationDisplayedCandidate(11, 25)],
+                entersHumanMode: false).ToJson());
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // The retry arrives after the 24-hour window has closed.
+        var result = await ProcessAsync(
+            host,
+            "wamid.closed-retry",
+            ConversationsTestDoubles.Now.AddHours(-25));
+
+        // A reply that is already durable is not a new free-form send, so the closed window may not make
+        // the retry forget it: the stored row is reconciled and nothing is rendered or stored again.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+        Assert.Equal("2", await ShortlistCountAsync(result.ConversationId));
+        Assert.Equal("10", await StateAsync(result.ConversationId, "state_json->>'lastModelId'"));
+        Assert.Equal("21", await StateAsync(result.ConversationId, "state_json->>'lastVariantId'"));
+    }
+
+    [Fact]
+    public async Task A_reply_this_turn_already_stored_is_reconciled_without_reopening_a_closed_conversation()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = StartSearchHost(d => doubles = d);
+
+        var created = await ProcessAsync(host, "wamid.closed-mode-first");
+        var storedId = await StoreAcceptedReplyAsync(
+            host,
+            created.ConversationId,
+            "wamid.closed-mode",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: true).ToJson());
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // The operator closes the conversation while this turn is still interpreting the message, after an
+        // earlier attempt had already stored the acknowledgement.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+        doubles.Nlu.Gate = gate;
+
+        var turn = ProcessAsync(host, "wamid.closed-mode");
+        await doubles.Nlu.Entered;
+
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await scope.ServiceProvider.GetRequiredService<IConversationModeControl>()
+                    .CloseAsync(created.ConversationId));
+        }
+
+        gate.SetResult();
+        var result = await turn;
+
+        // The already accepted reply is reconciled, but its handoff effect never reopens the closed
+        // conversation, and no new reply is rendered or stored.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal("Closed", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
+    public async Task A_search_retry_that_starts_in_human_mode_still_reconciles_the_reply_it_already_stored()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = StartSearchHost(d => doubles = d);
+
+        // The first turn of this conversation displayed two products.
+        var created = await ProcessAsync(host, "wamid.human-retry-first");
+
+        Assert.Equal("2", await ShortlistCountAsync(created.ConversationId));
+
+        // An earlier attempt of the retried turn stored a reply that displayed one product, and then died
+        // before its Conversations change was committed.
+        var storedId = await StoreAcceptedReplyAsync(
+            host,
+            created.ConversationId,
+            "wamid.human-retry",
+            ConversationOutboxMetadata.For(
+                [new ConversationDisplayedCandidate(10, 21)],
+                entersHumanMode: false).ToJson());
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // The operator takes the conversation over before the retry runs, so the retry is accepted by a
+        // conversation that no longer answers automatically.
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Equal(
+                ConversationModeChangeOutcome.Changed,
+                await scope.ServiceProvider.GetRequiredService<IConversationModeControl>()
+                    .TakeOverAsync(created.ConversationId));
+        }
+
+        var result = await ProcessAsync(host, "wamid.human-retry");
+
+        // The already durable reply is still reconciled, but only from its stored metadata: no
+        // interpretation, no renderer, no second reply, and Human is never released.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal("Human", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+        Assert.Equal("1", await ShortlistCountAsync(result.ConversationId));
+        Assert.Equal("10", await StateAsync(result.ConversationId, "state_json->>'lastModelId'"));
+        Assert.Equal(
+            "true",
+            await catalog.ScalarAsync(
+                "SELECT (last_outbound_at IS NOT NULL)::text FROM conversations.conversation "
+                + $"WHERE id = {result.ConversationId}"));
+    }
+
+    private static async Task<long> StoreAcceptedReplyAsync(
+        ConversationsHost host,
+        long conversationId,
+        string correlationId,
+        string applicationMetadata)
+    {
+        await using var scope = host.CreateScope();
+
+        var accepted = await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+            new OutboundMessageRequest(
+                conversationId,
+                Customer,
+                correlationId,
+                "AI",
+                "already shown",
+                applicationMetadata));
+
+        return accepted.OutboxMessageId;
+    }
+
+    private Task<string> ModeAsync(long conversationId) =>
+        catalog.ScalarAsync($"SELECT mode FROM conversations.conversation WHERE id = {conversationId}");
+
     private ConversationsHost StartSearchHost(
         Action<ConversationDoubles> observe,
         bool includeRenderer = true,
+        bool failClosedRenderer = false,
         Action<IServiceCollection>? overrideServices = null) =>
         ConversationsHost.Start(
             connectionString,
@@ -146,6 +300,11 @@ public sealed class ConversationDisplayStateTests(PostgresContainerFixture postg
                     includeRenderer: includeRenderer);
 
                 observe(doubles);
+
+                if (failClosedRenderer)
+                {
+                    services.AddFailClosedRenderer();
+                }
             },
             overrideServices);
 

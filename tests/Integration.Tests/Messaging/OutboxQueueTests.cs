@@ -67,8 +67,9 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
 
             for (var index = 1; index <= 6; index++)
             {
-                expectedIds.Add(await outbound.EnqueueAsync(
-                    MessagingSamples.Outbound(conversationId: 100 + index, customerExternalId: $"2010000090{index}")));
+                expectedIds.Add((await outbound.EnqueueAsync(
+                    MessagingSamples.Outbound(conversationId: 100 + index, customerExternalId: $"2010000090{index}")))
+                    .OutboxMessageId);
             }
         }
 
@@ -188,9 +189,9 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
         await using var scope = host.CreateScope();
         var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
 
-        return await outbound.EnqueueAsync(MessagingSamples.Outbound(
+        return (await outbound.EnqueueAsync(MessagingSamples.Outbound(
             conversationId: 11,
             customerExternalId: "20100000701",
-            body: ReplyBody));
+            body: ReplyBody))).OutboxMessageId;
     }
 }

@@ -50,8 +50,8 @@ public static class CompositionRoot
 
         // Conversations is the inbound orchestration: it records the customer, the conversation and the
         // service window, routes the interpreted intent, and asks Messaging for at most one durable
-        // reply per turn. Until Issue #12 binds the deterministic renderer, the module runs the
-        // fail-closed renderer, which produces no text and therefore enqueues nothing.
+        // reply per turn. The module binds its deterministic renderer, which writes every customer-facing
+        // reply from the current Catalog and Storefront facts.
         services.AddConversationsModule(connectionString);
 
         // The AI profile is the frozen Controlled Demo Candidate of docs/TECHNICAL.md section 8.2 and

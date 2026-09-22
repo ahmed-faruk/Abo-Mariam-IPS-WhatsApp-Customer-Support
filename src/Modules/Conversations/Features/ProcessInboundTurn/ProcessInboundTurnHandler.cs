@@ -9,11 +9,14 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInbound
 /// The inbound orchestration of docs/TECHNICAL.md section 16. One accepted turn is recorded, routed and
 /// answered in a fixed order: the Conversations change is committed first, the service window is then
 /// re-checked, and only then may the renderer produce text and Messaging store exactly one durable reply.
-/// The last step - read the conversation's mode again and decide whether this turn may still answer -
-/// runs inside the conversation's final-operation lock, which the operator's own mode changes take as
-/// well, so a reply can never be produced for a conversation an operator has already closed or taken
-/// over. No transaction spans the two modules, so a retried turn is safe: the reply's correlation id is
-/// the inbound provider message id, and Messaging refuses to store a second reply for it.
+/// The final section runs inside the conversation's final-operation lock, which the operator's own mode
+/// changes take as well: the mode is read again there, the renderer re-reads the current facts there, and
+/// the reply is stored there, so a reply can never be produced for a conversation an operator has already
+/// closed or taken over and no reply can quote a price that changed while the turn was being prepared. No
+/// transaction spans the two modules, so a retried turn is safe: the reply's correlation id is the inbound
+/// provider message id, Messaging refuses to store a second reply for it, and a turn whose reply was
+/// already stored reconciles that immutable reply instead of rendering a new one. That reconciliation runs
+/// before the mode and window gates, because a reply that is already durable is not a new free-form send.
 /// </summary>
 internal sealed class ProcessInboundTurnHandler(
     IConversationTurnStore store,
@@ -48,11 +51,11 @@ internal sealed class ProcessInboundTurnHandler(
 
         if (!ConversationModeRules.AnswersAutomatically(context.Mode))
         {
-            // A human owns this conversation, so the message is recorded and nothing else happens: no
-            // interpretation, no renderer, no Outbox. Only an explicit release returns it to AI.
+            // A human owns this conversation, so a new message is recorded and nothing else happens: no
+            // interpretation, no renderer, no new Outbox. Only an explicit release returns it to AI.
             await store.CommitAsync(cancellationToken);
 
-            return Result(context, ConversationTurnOutcome.AwaitingHuman);
+            return await AwaitHumanAsync(context, turn, cancellationToken);
         }
 
         var state = await store.LoadStateAsync(context.ConversationId, now, cancellationToken);
@@ -70,110 +73,227 @@ internal sealed class ProcessInboundTurnHandler(
 
         var handoff = route.Intent.Kind == ConversationResponseKind.HumanHandoff;
 
-        // The window is evaluated immediately before the free-form enqueue, against the current clock.
-        if (!ConversationWindowPolicy.IsOpen(context.WindowExpiresAt, UtcNow()))
-        {
-            // No free-form reply may be sent, but a handoff does not need one: the customer asked for a
-            // human, and that durable answer is recorded even when the window is closed.
-            if (handoff)
-            {
-                await AuthorizeAsync(
-                    context,
-                    ConversationModeRules.AfterHandoff,
-                    cancellationToken);
-            }
-
-            return Result(context, ConversationTurnOutcome.NoResponse);
-        }
-
-        var rendered = await renderer.RenderAsync(route.Intent, cancellationToken);
-
-        if (!rendered.IsRendered)
-        {
-            // The renderer is not bound yet, or produced nothing. No prose means no Outbox row.
-            if (handoff)
-            {
-                await AuthorizeAsync(
-                    context,
-                    ConversationModeRules.AfterHandoff,
-                    cancellationToken);
-            }
-
-            return Result(context, ConversationTurnOutcome.NoResponse);
-        }
-
-        // The final authorization. Everything before this point may have taken a long time, so the mode
-        // captured when the turn started is not trusted any more: the current mode is read again inside
-        // the conversation's lock, and only an automatic conversation may still produce this reply.
+        // The final section. Everything before this point may have taken a long time, so the mode captured
+        // when the turn started is not trusted any more: the current mode is read again inside the
+        // conversation's lock, and only an automatic conversation may still produce a new reply.
         await using var operation = await store.BeginFinalOperationAsync(
             context.ConversationId,
             cancellationToken);
         var authorizedMode = await operation.ReloadModeAsync(cancellationToken);
         context.Mode = authorizedMode;
 
+        // An earlier attempt of this same turn may already have stored its reply. That reply is immutable
+        // and is what the customer received, so the retry reconciles it instead of rendering again from
+        // facts that may have changed in the meantime. It is not a new free-form send: neither the mode the
+        // operator chose since nor a window that has closed since may make the application forget a reply
+        // it already durably accepted, so this is checked before both of those gates below.
+        if (await outbox.FindByCorrelationAsync(turn.ProviderMessageId, cancellationToken) is { } accepted)
+        {
+            await ReconcileAsync(
+                context,
+                route.State,
+                accepted,
+                applyStoredModeEffect: true,
+                cancellationToken);
+            await operation.CommitAsync(cancellationToken);
+
+            return Result(context, ConversationTurnOutcome.ResponseEnqueued, accepted.OutboxMessageId);
+        }
+
         if (!ConversationModeRules.AnswersAutomatically(authorizedMode))
         {
             // An operator closed the conversation or took it over while this turn was being prepared. The
-            // reply is dropped rather than enqueued: nothing is sent on behalf of a conversation the
+            // new reply is dropped rather than enqueued: nothing is sent on behalf of a conversation the
             // operator now owns, and the operator's own committed mode is left exactly as it is.
             await operation.CommitAsync(cancellationToken);
 
             return Result(context, ConversationTurnOutcome.NoResponse);
         }
 
-        var outboxMessageId = await outbox.EnqueueAsync(
+        // The window is evaluated immediately before the free-form enqueue, against the current clock. The
+        // already stored reply was handled above, so reaching this point means this is a new free-form send.
+        if (!ConversationWindowPolicy.IsOpen(context.WindowExpiresAt, UtcNow()))
+        {
+            // No free-form reply may be sent, but a handoff does not need one: the customer asked for a
+            // human, and that durable answer is recorded even when the window is closed.
+            await EnterHumanWithoutReplyAsync(context, handoff, cancellationToken);
+            await operation.CommitAsync(cancellationToken);
+
+            return Result(context, ConversationTurnOutcome.NoResponse);
+        }
+
+        // The render re-reads the current business facts of the reply, which is why it runs inside the
+        // lock and as late as possible before the durable enqueue.
+        var rendered = await renderer.RenderAsync(route.Intent, cancellationToken);
+
+        if (!rendered.IsRendered)
+        {
+            // No prose means no Outbox row. A handoff does not depend on one: the customer asked for a
+            // human, and that durable answer is recorded even when no acknowledgement could be written.
+            await EnterHumanWithoutReplyAsync(context, handoff, cancellationToken);
+            await operation.CommitAsync(cancellationToken);
+
+            return Result(context, ConversationTurnOutcome.NoResponse);
+        }
+
+        // Reading the current facts takes time of its own, so the window is evaluated once more against
+        // the current clock immediately before the free-form enqueue. A window that closed while the reply
+        // was being rendered must not carry a free-form message, and the list it would have shown must not
+        // become addressable either.
+        if (!ConversationWindowPolicy.IsOpen(context.WindowExpiresAt, UtcNow()))
+        {
+            await EnterHumanWithoutReplyAsync(context, handoff, cancellationToken);
+            await operation.CommitAsync(cancellationToken);
+
+            return Result(context, ConversationTurnOutcome.NoResponse);
+        }
+
+        var metadata = ConversationOutboxMetadata.For(rendered.DisplayedCandidates, handoff);
+        var stored = await outbox.EnqueueAsync(
             new OutboundMessageRequest(
                 context.ConversationId,
                 turn.CustomerExternalId,
                 turn.ProviderMessageId,
                 OutboundSenderNames.Ai,
-                rendered.Body!),
+                rendered.Body!,
+                metadata.ToJson()),
             cancellationToken);
 
-        if (handoff)
-        {
-            // The acknowledgement is durable now, so the conversation may become Human. A crash between
-            // the two is safe: the retried turn reuses this same Outbox row and completes the change.
-            await store.SetModeAsync(context, ConversationModes.Human, UtcNow(), cancellationToken);
-        }
-
-        if (route.DisplayedState is { } displayed)
-        {
-            // The reply the customer will receive is durable, so the list it shows becomes the list the
-            // conversation can reference from now on.
-            await store.SaveStateAsync(context, displayed, UtcNow(), cancellationToken);
-        }
-
-        await store.RecordOutboundAsync(context.ConversationId, UtcNow(), cancellationToken);
+        // The acceptance Messaging returned is authoritative: when the correlation was already stored, the
+        // conversation reconciles the reply that was really accepted and not the one this attempt built.
+        await ReconcileAsync(
+            context,
+            route.State,
+            stored,
+            applyStoredModeEffect: true,
+            cancellationToken);
         await operation.CommitAsync(cancellationToken);
 
-        return Result(context, ConversationTurnOutcome.ResponseEnqueued, outboxMessageId);
+        return Result(context, ConversationTurnOutcome.ResponseEnqueued, stored.OutboxMessageId);
     }
 
     /// <summary>
-    /// Applies the one durable Conversations change of a final operation, inside the conversation's
-    /// lock: the mode is read again, and the change only happens if it still applies to the mode that is
-    /// stored now. A conversation an operator closed stays closed, and a mode the operator already chose
-    /// is never overwritten by a stale turn.
+    /// Records what a conversation a human owns does with one accepted inbound. Normally that is nothing
+    /// further: the message is recorded and no interpretation, renderer or reply follows it.
     /// </summary>
-    private async Task AuthorizeAsync(
+    /// <remarks>
+    /// An earlier attempt of this same inbound may however already have stored its reply, and a reply that
+    /// is already durable is not a new free-form send. The operator's mode suppresses a new automatic
+    /// response; it may not make the conversation forget a response it already accepted. So the
+    /// conversation's lock is taken, the mode is read again there, and a stored reply of this correlation is
+    /// reconciled from its immutable metadata alone. Nothing is interpreted, rendered, enqueued, or checked
+    /// against the service window on this path.
+    /// </remarks>
+    private async Task<ConversationTurnResult> AwaitHumanAsync(
         ConversationTurnContext context,
-        Func<string, string?> decide,
+        InboundTurn turn,
         CancellationToken cancellationToken)
     {
         await using var operation = await store.BeginFinalOperationAsync(
             context.ConversationId,
             cancellationToken);
-        var currentMode = await operation.ReloadModeAsync(cancellationToken);
-        context.Mode = currentMode;
+        context.Mode = await operation.ReloadModeAsync(cancellationToken);
 
-        if (decide(currentMode) is { } next
-            && !string.Equals(next, currentMode, StringComparison.Ordinal))
+        if (await outbox.FindByCorrelationAsync(turn.ProviderMessageId, cancellationToken) is not { } accepted)
         {
-            await store.SetModeAsync(context, next, UtcNow(), cancellationToken);
+            // Nothing of this inbound is durable, so the documented behaviour stands: the message is
+            // recorded, a human owns the conversation, and the lock is released without committing.
+            return Result(context, ConversationTurnOutcome.AwaitingHuman);
         }
 
+        // Only the stored reply of this correlation is applied, and only through the same rules the
+        // display path uses: the list it really showed and the outbound lifecycle. The mode is a different
+        // matter here - the inbound was accepted by a conversation a human owned, so the mode the operator
+        // chooses meanwhile is always the stronger decision and the stored reply never moves it.
+        var state = await store.LoadStateAsync(context.ConversationId, UtcNow(), cancellationToken);
+
+        await ReconcileAsync(
+            context,
+            state,
+            accepted,
+            applyStoredModeEffect: false,
+            cancellationToken);
         await operation.CommitAsync(cancellationToken);
+
+        return Result(context, ConversationTurnOutcome.ResponseEnqueued, accepted.OutboxMessageId);
+    }
+
+    /// <summary>
+    /// Applies the Conversations change of one durably accepted reply: the list its stored metadata
+    /// confirms was displayed and the outbound lifecycle, and - where this turn owns the automatic
+    /// decision - the mode its stored metadata confirms.
+    /// </summary>
+    /// <remarks>
+    /// The stored metadata is the only evidence of what the accepted reply was. A row stored before this
+    /// version carries none, and this attempt's freshly computed route is not proof of what that older
+    /// immutable body represented, so a null payload never changes the mode or the displayed list: its row
+    /// is still reused, but the conversation keeps the mode and the references the operator last chose.
+    /// </remarks>
+    /// <param name="applyStoredModeEffect">
+    /// True when this reconciliation completes the mode effect of a reply this turn may still act on, which
+    /// is a turn that started automatic. False when the inbound was accepted by a conversation a human
+    /// already owned: the operator's own mode decision is the stronger one there, so a stored handoff may
+    /// never move that conversation - it can neither take it back from an explicit release to the assistant
+    /// nor reopen it.
+    /// </param>
+    private async Task ReconcileAsync(
+        ConversationTurnContext context,
+        ConversationStateDocument baseState,
+        OutboundAcceptance accepted,
+        bool applyStoredModeEffect,
+        CancellationToken cancellationToken)
+    {
+        var metadata = ConversationOutboxMetadata.Parse(accepted.ApplicationMetadata);
+
+        // The acknowledgement is durable now, so the conversation may become Human. A crash between the
+        // enqueue and this commit is safe: the retried turn reuses this same Outbox row and reads the same
+        // effect from the metadata it stored with it. A handoff never reopens a conversation an operator has
+        // closed in the meantime, and never overwrites the mode an operator has already chosen.
+        if (applyStoredModeEffect
+            && metadata is { EntersHumanMode: true }
+            && ConversationModeRules.AfterHandoff(context.Mode) is { } handoffMode
+            && !string.Equals(handoffMode, context.Mode, StringComparison.Ordinal))
+        {
+            await store.SetModeAsync(context, handoffMode, UtcNow(), cancellationToken);
+        }
+
+        if (metadata is { DisplayedCandidates.Count: > 0 })
+        {
+            // The reply the customer will receive is durable, so the list it shows becomes the list the
+            // conversation can reference from now on: the accepted order, the accepted first product, and
+            // the customer's own filters alongside them.
+            var first = metadata.DisplayedCandidates[0];
+
+            await store.SaveStateAsync(
+                context,
+                baseState with
+                {
+                    Shortlist = ConversationStateDocument.BuildShortlist(
+                        metadata.DisplayedCandidates.Select(candidate => (candidate.ModelId, candidate.VariantId))),
+                    LastModelId = first.ModelId,
+                    LastVariantId = first.VariantId,
+                },
+                UtcNow(),
+                cancellationToken);
+        }
+
+        await store.RecordOutboundAsync(context.ConversationId, UtcNow(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Records the mode of a turn that produced no reply at all. A handoff still has to become durable
+    /// Human - with a closed service window, or with no renderer bound, there is simply no acknowledgement
+    /// to store first - while every other turn leaves the mode exactly as the operator left it.
+    /// </summary>
+    private async Task EnterHumanWithoutReplyAsync(
+        ConversationTurnContext context,
+        bool handoff,
+        CancellationToken cancellationToken)
+    {
+        if (handoff)
+        {
+            await store.SetModeAsync(context, ConversationModes.Human, UtcNow(), cancellationToken);
+        }
     }
 
     /// <summary>

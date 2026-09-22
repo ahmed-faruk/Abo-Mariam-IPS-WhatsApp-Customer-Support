@@ -32,11 +32,13 @@ internal static class MessagingSamples
         string customerExternalId,
         string body = "your reply",
         string sender = OutboxSenders.Ai,
-        string? correlationId = null) =>
+        string? correlationId = null,
+        string? applicationMetadata = null) =>
         new(
             ConversationId: conversationId,
             CustomerExternalId: customerExternalId,
             CorrelationId: correlationId ?? string.Create(CultureInfo.InvariantCulture, $"corr-{conversationId}"),
             Sender: sender,
-            Body: body);
+            Body: body,
+            ApplicationMetadata: applicationMetadata);
 }

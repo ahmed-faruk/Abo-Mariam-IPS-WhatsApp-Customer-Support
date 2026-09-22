@@ -134,19 +134,13 @@ internal sealed class ConversationIntentRouter(
                 next);
         }
 
-        var displayed = next with
-        {
-            Shortlist = ConversationStateDocument.BuildShortlist(
-                results.Select(result => (result.ModelId, result.VariantId))),
-            LastModelId = results[0].ModelId,
-            LastVariantId = results[0].VariantId,
-        };
-
+        // What the reply displays is decided by the final search the renderer runs immediately before the
+        // reply is stored, so this turn carries the effective query and nothing that claims a list was
+        // shown. The customer's own filters do travel with the turn, because they are their own words.
         return new ConversationRoute(
             Reply(conversationId, customerExternalId, ConversationResponseKind.ProductSearchResults)
-                .WithCandidates(results.Select(result => (result.ModelId, result.VariantId))),
-            next,
-            displayed);
+                .WithSearchQuery(query),
+            next);
     }
 
     /// <summary>

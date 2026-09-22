@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Domain;
 
 namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence.Configurations;
@@ -42,6 +43,12 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
 
         builder.Property(message => message.Body).HasColumnName("body").IsRequired();
         builder.Property(message => message.BodyHash).HasColumnName("body_hash").IsRequired();
+
+        // The metadata next to an immutable reply is bounded by the database itself, so a caller cannot
+        // turn the Outbox row into an unbounded payload store. Existing rows simply have none.
+        builder.Property(message => message.ApplicationMetadata)
+            .HasColumnName("application_metadata")
+            .HasMaxLength(OutboundMessageRequest.MaxApplicationMetadataLength);
 
         builder.Property(message => message.ProviderMessageId).HasColumnName("provider_message_id");
         builder.HasIndex(message => message.ProviderMessageId).IsUnique();

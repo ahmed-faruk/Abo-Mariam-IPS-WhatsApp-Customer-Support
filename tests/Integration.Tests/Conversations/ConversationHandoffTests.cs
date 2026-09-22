@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
+using WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInboundTurn;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 
@@ -90,13 +91,14 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
 
         await using (var scope = host.CreateScope())
         {
-            storedId = await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+            storedId = (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
                 new OutboundMessageRequest(
                     created.ConversationId,
                     Customer,
                     Correlation,
                     "AI",
-                    "handoff acknowledgement"));
+                    "handoff acknowledgement",
+                    ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson()))).OutboxMessageId;
         }
 
         doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
@@ -112,13 +114,100 @@ public sealed class ConversationHandoffTests(PostgresContainerFixture postgres) 
     }
 
     [Fact]
+    public async Task A_handoff_retried_after_the_window_closed_still_reconciles_its_stored_acknowledgement()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = ConversationsHost.Start(
+            connectionString,
+            services => doubles = services.AddConversationDoubles(
+                NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+                renderedBody: "the deterministic reply"));
+
+        var created = await ProcessAsync(host, "wamid.handoff-window-before");
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // An earlier attempt of the retried turn stored the acknowledgement and then died before its
+        // Conversations commit.
+        long storedId;
+
+        await using (var scope = host.CreateScope())
+        {
+            storedId = (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+                new OutboundMessageRequest(
+                    created.ConversationId,
+                    Customer,
+                    Correlation,
+                    "AI",
+                    "handoff acknowledgement",
+                    ConversationOutboxMetadata.For([], entersHumanMode: true).ToJson()))).OutboxMessageId;
+        }
+
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+
+        // The retry arrives after the 24-hour window has closed. The acknowledgement is not a new send, so
+        // the closed window may not stop the retry from completing the handoff it already made durable.
+        var result = await ProcessAsync(host, Correlation, ConversationsTestDoubles.Now.AddHours(-25));
+
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal("Human", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
+    public async Task A_stored_reply_without_metadata_does_not_become_a_handoff_just_because_the_retry_repeats_one()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = ConversationsHost.Start(
+            connectionString,
+            services => doubles = services.AddConversationDoubles(
+                NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+                renderedBody: "the deterministic reply"));
+
+        var created = await ProcessAsync(host, "wamid.handoff-legacy-before");
+        var renderCalls = doubles.Renderer.Intents.Count;
+
+        // A reply stored before metadata existed owns the correlation but carries no evidence of what its
+        // own body meant.
+        long storedId;
+
+        await using (var scope = host.CreateScope())
+        {
+            storedId = (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+                new OutboundMessageRequest(
+                    created.ConversationId,
+                    Customer,
+                    Correlation,
+                    "AI",
+                    "an older reply"))).OutboxMessageId;
+        }
+
+        doubles.Nlu.Analysis = NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff));
+
+        var result = await ProcessAsync(host, Correlation);
+
+        // The row is reused, but the freshly computed route is not proof of what it contained, so the
+        // conversation stays automatic.
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Equal(storedId, result.OutboxMessageId);
+        Assert.Equal("AI", await ModeAsync(result.ConversationId));
+        Assert.Equal(renderCalls, doubles.Renderer.Intents.Count);
+        Assert.Equal("2", await OutboxCountAsync());
+    }
+
+    [Fact]
     public async Task A_handoff_of_the_fail_closed_renderer_enters_human_without_a_reply()
     {
         await using var host = ConversationsHost.Start(
             connectionString,
-            services => services.AddConversationDoubles(
-                NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff)),
-                includeRenderer: false));
+            services =>
+            {
+                services.AddConversationDoubles(
+                    NluAnalysisResult.Success(Interpretation(NluIntent.HumanHandoff)),
+                    includeRenderer: false);
+                services.AddFailClosedRenderer();
+            });
 
         var result = await ProcessAsync(host, Correlation);
 
