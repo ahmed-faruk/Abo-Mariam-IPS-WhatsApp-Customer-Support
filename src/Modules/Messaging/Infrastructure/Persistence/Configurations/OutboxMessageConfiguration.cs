@@ -29,6 +29,13 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         builder.Property(message => message.CustomerExternalId).HasColumnName("customer_external_id").IsRequired();
         builder.Property(message => message.CorrelationId).HasColumnName("correlation_id").IsRequired();
 
+        // One durable reply per inbound turn: the correlation is the inbound provider message id, which
+        // is already unique in the Inbox, so a globally unique correlation is the smallest guarantee
+        // that makes the Outbox enqueue idempotent instead of duplicating a retried turn's reply.
+        builder.HasIndex(message => message.CorrelationId)
+            .IsUnique()
+            .HasDatabaseName("ux_outbox_correlation_id");
+
         builder.Property(message => message.Sender)
             .HasColumnName("sender")
             .HasDefaultValue(OutboxSenders.Ai);
