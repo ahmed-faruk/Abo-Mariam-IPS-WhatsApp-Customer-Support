@@ -13,18 +13,66 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 /// </summary>
 public static class BusinessInfoScope
 {
-    // Keywords are normalized the same way the incoming text is, so an Arabic spelling difference that
-    // is purely orthographic (hamza or ya' form, diacritics, tatweel) still resolves. The allowlist
-    // itself stays explicit: nothing outside these keywords can resolve to a key.
-    private static readonly (string Key, string[] Keywords)[] Entries =
+    /// <summary>
+    /// The spellings Arabic attaches in front of a noun: the definite article, the short prepositions and
+    /// the combinations that merge with the article. Only an alias that is itself a noun takes them.
+    /// </summary>
+    private static readonly string[] NounPrefixes =
     [
-        (BusinessInfoKeyNames.WorkingHours, ["مواعيد", "معاد", "بتفتحوا", "بتقفلوا", "working hours", "opening hours", "hours", "open"]),
-        (BusinessInfoKeyNames.Address, ["عنوان", "مكان", "فين", "address", "location", "located"]),
-        (BusinessInfoKeyNames.Delivery, ["توصيل", "شحن", "delivery", "deliver", "shipping"]),
-        (BusinessInfoKeyNames.PaymentMethods, ["دفع", "فيزا", "كاش", "payment", "visa", "cash", "instapay"]),
-        (BusinessInfoKeyNames.Warranty, ["ضمان", "warranty", "guarantee"]),
-        (BusinessInfoKeyNames.ContactPhone, ["تليفون", "موبايل", "واتساب", "phone", "contact", "whatsapp"]),
-        (BusinessInfoKeyNames.ReturnExchangePolicy, ["استرجاع", "استبدال", "return", "refund", "exchange"]),
+        string.Empty, "ال", "و", "ف", "ب", "ك", "ل", "لل", "بال", "وال", "فال", "كال", "بل", "ولل", "فالل", "بالل",
+    ];
+
+    /// <summary>An alias that counts only as its own word accepts nothing attached in front of it.</summary>
+    private static readonly string[] OwnWordPrefixes = [string.Empty];
+
+    /// <summary>
+    /// One approved alias together with the spellings that may stand attached in front of it. The
+    /// allowance belongs to the alias rather than to the allowlist as a whole: one set of removable
+    /// prefixes for every alias reads unrelated words as concepts, because "ال" + "فين" spells "ألفين"
+    /// (two thousand), which is a number and not a place.
+    /// </summary>
+    private readonly record struct Alias(string Text, string[] AttachedPrefixes)
+    {
+        /// <summary>A noun alias, which Arabic also writes with the article or a short preposition attached.</summary>
+        public static Alias Noun(string text) => new(text, NounPrefixes);
+
+        /// <summary>An alias that is matched only as a whole word of its own.</summary>
+        public static Alias OwnWord(string text) => new(text, OwnWordPrefixes);
+    }
+
+    // Aliases are normalized the same way the incoming text is, so an Arabic spelling difference that
+    // is purely orthographic (hamza or ya' form, diacritics, tatweel) still resolves. The allowlist
+    // itself stays explicit: nothing outside these aliases can resolve to a key.
+    private static readonly (string Key, Alias[] Aliases)[] Entries =
+    [
+        (BusinessInfoKeyNames.WorkingHours, [
+            Alias.Noun("مواعيد"), Alias.Noun("معاد"), Alias.Noun("بتفتحوا"), Alias.Noun("بتقفلوا"),
+            Alias.OwnWord("working hours"), Alias.OwnWord("opening hours"), Alias.OwnWord("hours"), Alias.OwnWord("open"),
+        ]),
+        (BusinessInfoKeyNames.Address, [
+            Alias.Noun("عنوان"), Alias.Noun("مكان"),
+            // "فين" never takes a prefix, because the article in front of it spells the number word
+            // "ألفين"; "المكان فين؟" and "فين المكان؟" both still resolve through the standing word.
+            Alias.OwnWord("فين"),
+            Alias.OwnWord("address"), Alias.OwnWord("location"), Alias.OwnWord("located"),
+        ]),
+        (BusinessInfoKeyNames.Delivery, [
+            Alias.Noun("توصيل"), Alias.Noun("شحن"),
+            Alias.OwnWord("delivery"), Alias.OwnWord("deliver"), Alias.OwnWord("shipping"),
+        ]),
+        (BusinessInfoKeyNames.PaymentMethods, [
+            Alias.Noun("دفع"), Alias.Noun("فيزا"), Alias.Noun("كاش"),
+            Alias.OwnWord("payment"), Alias.OwnWord("visa"), Alias.OwnWord("cash"), Alias.OwnWord("instapay"),
+        ]),
+        (BusinessInfoKeyNames.Warranty, [Alias.Noun("ضمان"), Alias.OwnWord("warranty"), Alias.OwnWord("guarantee")]),
+        (BusinessInfoKeyNames.ContactPhone, [
+            Alias.Noun("تليفون"), Alias.Noun("موبايل"), Alias.Noun("واتساب"),
+            Alias.OwnWord("phone"), Alias.OwnWord("contact"), Alias.OwnWord("whatsapp"),
+        ]),
+        (BusinessInfoKeyNames.ReturnExchangePolicy, [
+            Alias.Noun("استرجاع"), Alias.Noun("استبدال"),
+            Alias.OwnWord("return"), Alias.OwnWord("refund"), Alias.OwnWord("exchange"),
+        ]),
     ];
 
     /// <summary>
@@ -44,11 +92,11 @@ public static class BusinessInfoScope
 
         var keys = new List<string>();
 
-        foreach (var (key, keywords) in Entries)
+        foreach (var (key, aliases) in Entries)
         {
-            foreach (var keyword in keywords)
+            foreach (var alias in aliases)
             {
-                if (Contains(normalized, keyword))
+                if (Contains(normalized, alias))
                 {
                     keys.Add(key);
 
@@ -115,15 +163,16 @@ public static class BusinessInfoScope
     };
 
     /// <summary>
-    /// Latin keywords have to sit on word boundaries, so "open" cannot match inside "openssl". Arabic
-    /// keywords match inside their own word, because Arabic writes the definite article, short
+    /// Latin aliases have to sit on word boundaries, so "open" cannot match inside "openssl". Arabic
+    /// aliases match inside their own word, because Arabic writes the definite article, short
     /// prepositions and pronoun suffixes attached to the word: "المكان", "فيزا" and "مواعيدكم" are the
-    /// same concepts as "مكان" and "مواعيد". A keyword is never matched in the middle of a stem that is
-    /// a different word, which is what keeps the address alias "مكان" out of "إمكانية".
+    /// same concepts as "مكان" and "مواعيد". What may stand in front of an alias is decided by that alias
+    /// alone, which is what keeps the address alias "مكان" out of "إمكانية" and the address alias "فين"
+    /// out of the number word "ألفين".
     /// </summary>
-    private static bool Contains(string haystack, string keyword)
+    private static bool Contains(string haystack, Alias alias)
     {
-        var normalizedKeyword = Normalize(keyword) ?? string.Empty;
+        var normalizedKeyword = Normalize(alias.Text) ?? string.Empty;
 
         if (normalizedKeyword.Length == 0)
         {
@@ -132,7 +181,7 @@ public static class BusinessInfoScope
 
         return IsLatin(normalizedKeyword)
             ? ContainsWord(haystack, normalizedKeyword)
-            : ContainsArabicWord(haystack, normalizedKeyword);
+            : ContainsArabicWord(haystack, normalizedKeyword, alias.AttachedPrefixes);
     }
 
     private static bool IsLatin(string value) => value.All(character => character < '\u0080');
@@ -160,18 +209,7 @@ public static class BusinessInfoScope
         }
     }
 
-    /// <summary>
-    /// The spellings Arabic may attach in front of a keyword: the definite article, the short
-    /// prepositions and their combinations. A word whose stem merely contains the keyword's letters is
-    /// not a match, because the letters in front of it are its own stem rather than one of these
-    /// prefixes: "إمكانية" normalizes to "امكانيه", whose leading "ا" is not in this list.
-    /// </summary>
-    private static readonly string[] ArabicPrefixes =
-    [
-        string.Empty, "ال", "و", "ف", "ب", "ك", "ل", "لل", "بال", "وال", "فال", "كال", "بل", "ولل", "فالل", "بالل",
-    ];
-
-    private static bool ContainsArabicWord(string haystack, string keyword)
+    private static bool ContainsArabicWord(string haystack, string keyword, string[] allowedPrefixes)
     {
         foreach (var word in haystack.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -186,7 +224,7 @@ public static class BusinessInfoScope
                     break;
                 }
 
-                if (IsAllowedPrefix(word.AsSpan(0, found)))
+                if (IsAllowedPrefix(word.AsSpan(0, found), allowedPrefixes))
                 {
                     return true;
                 }
@@ -198,9 +236,9 @@ public static class BusinessInfoScope
         return false;
     }
 
-    private static bool IsAllowedPrefix(ReadOnlySpan<char> prefix)
+    private static bool IsAllowedPrefix(ReadOnlySpan<char> prefix, string[] allowedPrefixes)
     {
-        foreach (var allowed in ArabicPrefixes)
+        foreach (var allowed in allowedPrefixes)
         {
             if (prefix.SequenceEqual(allowed))
             {

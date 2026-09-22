@@ -146,6 +146,34 @@ public sealed class ConversationModeRaceTests(PostgresContainerFixture postgres)
     }
 
     [Fact]
+    public async Task Two_conversations_whose_ids_share_their_low_bits_do_not_serialize_each_other()
+    {
+        ConversationDoubles doubles = null!;
+        await using var host = StartHost(d => doubles = d);
+        var conversationId = await CreateConversationAsync(host);
+
+        // A different conversation whose id carries the same low 32 bits as the first one.
+        var farConversationId = conversationId + 4_294_967_296L;
+
+        await using var holder = host.CreateScope();
+        var coordinator = holder.ServiceProvider.GetRequiredService<ConversationOperationCoordinator>();
+        await using var operation = await coordinator.BeginAsync(conversationId, CancellationToken.None);
+
+        await using (var otherScope = host.CreateScope())
+        {
+            var otherCoordinator = otherScope.ServiceProvider.GetRequiredService<ConversationOperationCoordinator>();
+
+            // Sharing low bits is not sharing a conversation: the far conversation takes its own lock
+            // identity immediately instead of waiting behind the operation of the first one.
+            await using var otherOperation = await otherCoordinator
+                .BeginAsync(farConversationId, CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        await operation.CommitAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task The_conversation_lock_is_released_when_an_operation_throws()
     {
         ConversationDoubles doubles = null!;

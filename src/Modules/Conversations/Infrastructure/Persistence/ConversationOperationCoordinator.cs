@@ -22,12 +22,25 @@ internal sealed class ConversationOperationCoordinator(ConversationDbContext dbC
 {
     /// <summary>
     /// The constant that namespaces this application's conversation locks inside the shared advisory
-    /// lock space, so a conversation id cannot collide with an unrelated lock of another key space.
+    /// lock space, so a conversation id cannot collide with an unrelated lock of another key space. It is
+    /// folded into the key rather than reserving bits of it, because the key has to keep the whole
+    /// conversation id: the reserved bits are what used to make 1 and 1 + 2^32 share one lock.
     /// </summary>
     private const long LockNamespace = 0x434F4E56_00000000L;
 
-    /// <summary>The deterministic advisory lock key of one conversation.</summary>
-    internal static long LockKeyFor(long conversationId) => LockNamespace | (conversationId & 0xFFFF_FFFFL);
+    /// <summary>
+    /// The deterministic advisory lock key of one conversation. Every bit of the id takes part, so two
+    /// conversations that merely share their low 32 bits, such as 1 and 1 + 2^32, still hold two different
+    /// locks. The exclusive or with the fixed namespace constant maps two different ids to two different
+    /// keys, and the key depends on nothing but the id: no process-random hash, no machine architecture
+    /// and no per-replica state, so every replica derives the same key for the same conversation.
+    /// </summary>
+    internal static long LockKeyFor(long conversationId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(conversationId);
+
+        return LockNamespace ^ conversationId;
+    }
 
     /// <summary>
     /// Serializes the final section of one conversation. The caller owns the returned operation and must
@@ -37,7 +50,9 @@ internal sealed class ConversationOperationCoordinator(ConversationDbContext dbC
         long conversationId,
         CancellationToken cancellationToken)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(conversationId);
+        // The key is derived before the transaction, so an id outside the conversation domain fails
+        // without ever opening one.
+        var lockKey = LockKeyFor(conversationId);
 
         var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
 
@@ -47,7 +62,7 @@ internal sealed class ConversationOperationCoordinator(ConversationDbContext dbC
             // the conversation's lock first, and that ordering is visible to every replica.
             await dbContext.Database.ExecuteSqlRawAsync(
                 "SELECT pg_advisory_xact_lock({0})",
-                [LockKeyFor(conversationId)],
+                [lockKey],
                 cancellationToken);
         }
         catch

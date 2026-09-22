@@ -79,4 +79,20 @@ public sealed class BusinessInfoScopeTests
         // is therefore not named by a payment question, and the question stays unambiguous.
         Assert.Equal([expectedKey], BusinessInfoScope.ResolveKeys(text));
     }
+
+    [Fact]
+    public void A_bare_number_word_resolves_to_nothing()
+    {
+        // "ألفين" (two thousand) is a number, not a place: the leading "ال" belongs to the number word
+        // itself, so it may not be read as an article attached to the address alias "فين".
+        Assert.Empty(BusinessInfoScope.ResolveKeys("ألفين"));
+    }
+
+    [Theory]
+    [InlineData("السعر ألفين جنيه")]
+    [InlineData("في حدود ألفين")]
+    public void A_number_word_never_names_the_address_concept(string text)
+    {
+        Assert.DoesNotContain(BusinessInfoKeyNames.Address, BusinessInfoScope.ResolveKeys(text));
+    }
 }
