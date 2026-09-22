@@ -113,9 +113,13 @@ public sealed class ConversationOrchestrationTests(PostgresContainerFixture post
     [Fact]
     public async Task The_fail_closed_renderer_of_the_host_leaves_no_durable_reply()
     {
-        await using var host = StartHost(services => services.AddConversationDoubles(
-            NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
-            includeRenderer: false));
+        await using var host = StartHost(services =>
+        {
+            services.AddConversationDoubles(
+                NluAnalysisResult.Success(Interpretation(NluIntent.Greeting)),
+                includeRenderer: false);
+            services.AddFailClosedRenderer();
+        });
 
         var result = await ProcessAsync(host, Correlation);
 

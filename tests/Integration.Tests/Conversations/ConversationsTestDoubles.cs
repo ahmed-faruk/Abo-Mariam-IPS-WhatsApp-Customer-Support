@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Modules.Catalog.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
+using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
@@ -27,15 +28,17 @@ internal static class ConversationsTestDoubles
         var details = new StubCatalogProductDetails();
         publishFacts?.Invoke(details);
 
+        var search = new StubCatalogSearch(searchResults ?? [], knownModelCode);
         var nlu = new StubAiNluClient(analysis);
-        var renderer = new StubConversationRenderer(details, renderedBody);
+        var renderer = new StubConversationRenderer(details, search, renderedBody);
 
         services.AddSingleton<TimeProvider>(new FixedClock(Now));
         services.AddSingleton<IAiNluClient>(nlu);
-        var search = new StubCatalogSearch(searchResults ?? [], knownModelCode);
         services.AddSingleton<ICatalogSearch>(search);
         services.AddSingleton<ICatalogProductDetails>(details);
 
+        // A test that wants the fail-closed host of Issue #11 passes false and binds that renderer itself;
+        // leaving the stub out lets the production deterministic renderer of the module answer instead.
         if (includeRenderer)
         {
             services.AddSingleton<IConversationRenderer>(renderer);
@@ -43,6 +46,13 @@ internal static class ConversationsTestDoubles
 
         return new ConversationDoubles(nlu, details, renderer, search);
     }
+
+    /// <summary>
+    /// Binds the fail-closed renderer the host ran before Issue #12, so a test can assert the behaviour of
+    /// a host that produces no customer-facing text at all.
+    /// </summary>
+    public static void AddFailClosedRenderer(this IServiceCollection services) =>
+        services.AddSingleton<IConversationRenderer, FailClosedConversationRenderer>();
 
     /// <summary>
     /// Replaces the Messaging Outbox with one whose first durable enqueue fails, the way a lost
@@ -72,7 +82,12 @@ internal sealed class FirstAttemptFailingOutbox(
     OutboundMessageQueue inner,
     EnqueueAttemptCounter counter) : IOutboundMessageQueue
 {
-    public async Task<long> EnqueueAsync(
+    public Task<OutboundAcceptance?> FindByCorrelationAsync(
+        string correlationId,
+        CancellationToken cancellationToken = default) =>
+        inner.FindByCorrelationAsync(correlationId, cancellationToken);
+
+    public async Task<OutboundAcceptance> EnqueueAsync(
         OutboundMessageRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -226,9 +241,13 @@ internal sealed class StubCatalogProductDetails : ICatalogProductDetails
 /// <summary>
 /// A deterministic stand-in for the Issue #12 renderer. For a price or availability reply it reads the
 /// current facts through the Catalog contract, which is exactly the revalidation boundary the real
-/// renderer will use, so the integration suite proves the seam instead of assuming it.
+/// renderer uses; for a search reply it re-runs the effective query and returns the current results as the
+/// list it displayed, which is what makes a displayed list authoritative instead of tentative.
 /// </summary>
-internal sealed class StubConversationRenderer(ICatalogProductDetails details, string? body) : IConversationRenderer
+internal sealed class StubConversationRenderer(
+    ICatalogProductDetails details,
+    ICatalogSearch search,
+    string? body) : IConversationRenderer
 {
     public List<ConversationResponseIntent> Intents { get; } = [];
 
@@ -252,6 +271,17 @@ internal sealed class StubConversationRenderer(ICatalogProductDetails details, s
             // The renderer never reads the price from the intent or from conversation state; it reads
             // the current catalogue value immediately before producing the text.
             lines.Add($"price={facts?.Price.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
+        }
+
+        if (intent.Kind == ConversationResponseKind.ProductSearchResults)
+        {
+            var query = intent.SearchQuery ?? throw new InvalidOperationException(
+                "A search reply of this stub needs the effective query of the turn.");
+            var results = await search.SearchAsync(query, cancellationToken);
+
+            return ConversationRenderResult.Rendered(
+                string.Join('\n', lines),
+                results.Select(result => new ConversationDisplayedCandidate(result.ModelId, result.VariantId)));
         }
 
         return ConversationRenderResult.Rendered(string.Join('\n', lines));

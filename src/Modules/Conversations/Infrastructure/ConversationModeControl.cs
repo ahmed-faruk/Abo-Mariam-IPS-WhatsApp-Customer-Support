@@ -64,6 +64,11 @@ internal sealed class ConversationModeControl(
         conversation.Mode = next;
         conversation.UpdatedAt = now;
 
+        // Every explicit operator decision advances the conversation's mode revision, which is what makes a
+        // handoff that an earlier attempt made durable recognisable as superseded instead of being applied
+        // again on a later retry.
+        conversation.ModeRevision++;
+
         if (string.Equals(next, ConversationModes.Closed, StringComparison.Ordinal))
         {
             conversation.ClosedAt = now;

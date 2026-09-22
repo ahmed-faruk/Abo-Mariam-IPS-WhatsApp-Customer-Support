@@ -17,9 +17,14 @@ public sealed class MigrationApplicationTests(PostgresContainerFixture postgres)
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
             ["CatalogDbContext"] = ["InitialCatalog", "CanonicalProductModelCode"],
-            ["ConversationDbContext"] = ["InitialConversations"],
+            ["ConversationDbContext"] = ["InitialConversations", "AddConversationModeRevision"],
             ["MessagingDbContext"] =
-                ["InitialMessaging", "AddClaimLeasesAndUtf8BodyHash", "AddOutboxCorrelationUniqueness"],
+            [
+                "InitialMessaging",
+                "AddClaimLeasesAndUtf8BodyHash",
+                "AddOutboxCorrelationUniqueness",
+                "AddOutboxApplicationMetadata",
+            ],
             ["StorefrontDbContext"] = ["InitialStorefront"],
             ["IdentityDbContext"] = ["InitialIdentity"],
         };

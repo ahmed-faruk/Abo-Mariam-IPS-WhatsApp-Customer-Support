@@ -91,8 +91,9 @@ internal sealed class ConversationIntentRouter(
     /// A search keeps identifiers, the display order and the effective filters. A follow-up refines the
     /// search the conversation already holds: this turn's fields override the stored ones and every field
     /// it does not name is retained, so "Dell 24" followed by "IPS with HDMI" searches for all four. An
-    /// empty result set is a deterministic no-match against the effective filters, never a fallback to
-    /// something above a hard ceiling or a silently relaxed filter.
+    /// empty result set is never a fallback to something above a hard ceiling or a silently relaxed
+    /// filter: the reply carries the effective query, and the final search immediately before the durable
+    /// enqueue is what either displays current products or answers a deterministic no-match.
     /// The effective filters are the customer's own words and are stored as soon as the turn is accepted.
     /// The result list is not: a shortlist becomes addressable only once the reply that showed it is
     /// durably stored, so a search whose answer never reaches the customer - a closed service window, an
@@ -113,7 +114,13 @@ internal sealed class ConversationIntentRouter(
             return Clarify(conversationId, customerExternalId, state, reasonCode!);
         }
 
-        var results = await catalogSearch.SearchAsync(query, cancellationToken);
+        // The routing-time read of docs/TECHNICAL.md section 9: the search branch really asks the catalogue
+        // what its query means now. Its answer is deliberately not what the customer is shown. A product
+        // that is out of stock, retired or above a hard ceiling at this moment may be in stock, active and
+        // affordable moments later, and the reply would then quote a stale no-match while the customer's
+        // request could have been satisfied. What is displayed is decided by the final search the renderer
+        // runs immediately before the reply is stored, so only that read is authoritative.
+        await catalogSearch.SearchAsync(query, cancellationToken);
 
         var next = state with
         {
@@ -121,32 +128,13 @@ internal sealed class ConversationIntentRouter(
             LastFilters = filters,
         };
 
-        if (results.Count == 0)
-        {
-            // Nothing matched, so nothing new was displayed; the list the customer was last shown stays
-            // the last displayed list.
-            return new ConversationRoute(
-                Reply(
-                    conversationId,
-                    customerExternalId,
-                    ConversationResponseKind.NoMatch,
-                    ConversationReasonCodes.NoMatchUnderFilters),
-                next);
-        }
-
-        var displayed = next with
-        {
-            Shortlist = ConversationStateDocument.BuildShortlist(
-                results.Select(result => (result.ModelId, result.VariantId))),
-            LastModelId = results[0].ModelId,
-            LastVariantId = results[0].VariantId,
-        };
-
+        // What the reply displays is decided by the final search the renderer runs immediately before the
+        // reply is stored, so this turn carries the effective query and nothing that claims a list was
+        // shown. The customer's own filters do travel with the turn, because they are their own words.
         return new ConversationRoute(
             Reply(conversationId, customerExternalId, ConversationResponseKind.ProductSearchResults)
-                .WithCandidates(results.Select(result => (result.ModelId, result.VariantId))),
-            next,
-            displayed);
+                .WithSearchQuery(query),
+            next);
     }
 
     /// <summary>

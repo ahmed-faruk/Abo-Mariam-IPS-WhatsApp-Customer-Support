@@ -76,7 +76,8 @@ public sealed class QueueTransactionTests(PostgresContainerFixture postgres) : M
         {
             var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
 
-            id = await outbound.EnqueueAsync(MessagingSamples.Outbound(conversationId: 12, customerExternalId: "20100000803"));
+            id = (await outbound.EnqueueAsync(
+                MessagingSamples.Outbound(conversationId: 12, customerExternalId: "20100000803"))).OutboxMessageId;
         }
 
         await using var claimScope = host.CreateScope();

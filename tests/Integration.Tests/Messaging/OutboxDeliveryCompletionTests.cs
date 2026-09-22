@@ -116,10 +116,10 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
         await using var scope = host.CreateScope();
         var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
 
-        return await outbound.EnqueueAsync(MessagingSamples.Outbound(
+        return (await outbound.EnqueueAsync(MessagingSamples.Outbound(
             conversationId: 71,
             customerExternalId: "20100000711",
-            body: "the accepted reply"));
+            body: "the accepted reply"))).OutboxMessageId;
     }
 
     private MessagingHost StartHost(IOutboundMessageSender sender) =>

@@ -14,9 +14,10 @@ namespace WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure;
 public static class ConversationsModuleRegistration
 {
     /// <summary>
-    /// Registers the Conversations module. Until the deterministic renderer of Issue #12 is bound, the
-    /// module is registered with <see cref="FailClosedConversationRenderer"/>, so the host starts
-    /// normally and no customer-facing text can be produced accidentally.
+    /// Registers the Conversations module, including the deterministic renderer of Issue #12 that writes
+    /// every customer-facing reply from the current Catalog and Storefront facts.
+    /// <see cref="FailClosedConversationRenderer"/> stays available as the explicit fail-closed seam a
+    /// test binds when it wants the behaviour of a host that has no renderer at all.
     /// </summary>
     public static IServiceCollection AddConversationsModule(
         this IServiceCollection services,
@@ -36,7 +37,10 @@ public static class ConversationsModuleRegistration
         services.AddScoped<IConversationModeControl, ConversationModeControl>();
         services.AddScoped<IInboundMessageProcessor, MessagingInboundMessageProcessor>();
 
-        services.TryAddSingleton<IConversationRenderer, FailClosedConversationRenderer>();
+        // The deterministic renderer reads the current facts through the Catalog and Storefront contracts,
+        // which are scoped to their module's DbContext, so the renderer is scoped to the same scope as the
+        // turn that uses it. A singleton here would capture those readers.
+        services.TryAddScoped<IConversationRenderer, DeterministicConversationRenderer>();
 
         return services;
     }

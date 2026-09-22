@@ -20,18 +20,35 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
 {
     private const string InsertOutboxSql = """
         INSERT INTO messaging.outbox_message
-            (conversation_id, customer_external_id, correlation_id, sender, body, body_hash, partition_key)
+            (conversation_id, customer_external_id, correlation_id, sender, body, body_hash,
+             application_metadata, partition_key)
         VALUES
-            (@conversation_id, @customer_external_id, @correlation_id, @sender, @body, @body_hash, @partition_key)
+            (@conversation_id, @customer_external_id, @correlation_id, @sender, @body, @body_hash,
+             @application_metadata, @partition_key)
         ON CONFLICT (correlation_id) DO NOTHING
-        RETURNING id;
+        RETURNING id, conversation_id, body, application_metadata;
         """;
 
     private const string SelectByCorrelationSql = """
-        SELECT id FROM messaging.outbox_message WHERE correlation_id = @correlation_id;
+        SELECT id, conversation_id, body, application_metadata
+        FROM messaging.outbox_message
+        WHERE correlation_id = @correlation_id;
         """;
 
-    public async Task<long> EnqueueAsync(
+    public async Task<OutboundAcceptance?> FindByCorrelationAsync(
+        string correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        RequireText(correlationId, nameof(correlationId));
+
+        await using var command = MessagingQueueCommands.Create(
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, SelectByCorrelationSql);
+        MessagingQueueCommands.Add(command, "correlation_id", correlationId);
+
+        return await ReadAcceptanceAsync(command, cancellationToken);
+    }
+
+    public async Task<OutboundAcceptance> EnqueueAsync(
         OutboundMessageRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -40,6 +57,7 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         RequireText(request.CorrelationId, nameof(request));
         RequireText(request.Body, nameof(request));
         RequireSender(request.Sender, nameof(request));
+        RequireBoundedMetadata(request.ApplicationMetadata, nameof(request));
 
         if (request.ConversationId <= 0)
         {
@@ -57,25 +75,61 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         MessagingQueueCommands.Add(command, "sender", request.Sender);
         MessagingQueueCommands.Add(command, "body", request.Body);
         MessagingQueueCommands.Add(command, "body_hash", SHA256.HashData(Encoding.UTF8.GetBytes(request.Body)));
+        MessagingQueueCommands.Add(command, "application_metadata", request.ApplicationMetadata);
         MessagingQueueCommands.Add(command, "partition_key", request.ConversationId.ToString(CultureInfo.InvariantCulture));
 
-        if (await command.ExecuteScalarAsync(cancellationToken) is long insertedId)
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
-            return insertedId;
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                return new OutboundAcceptance(
+                    reader.GetInt64(0),
+                    reader.GetInt64(1),
+                    reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    IsExisting: false);
+            }
         }
 
         // The conflict was with a committed row, either from an earlier attempt of this same turn or
         // from a concurrent worker. Reusing that row is the whole point of the correlation: the reply
-        // is already durable, so this turn must not create another one.
+        // is already durable, so this turn must not create another one and must not rewrite the one that
+        // was accepted with its own newer values.
         await using var existing = MessagingQueueCommands.Create(
             await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, SelectByCorrelationSql);
         MessagingQueueCommands.Add(existing, "correlation_id", request.CorrelationId);
 
-        return await existing.ExecuteScalarAsync(cancellationToken) is long existingId
-            ? existingId
-            : throw new InvalidOperationException(
+        return await ReadAcceptanceAsync(existing, cancellationToken)
+            ?? throw new InvalidOperationException(
                 "The outbound intent was neither stored nor found for its correlation, so the durable "
                 + "Outbox could not be reconciled.");
+    }
+
+    private static async Task<OutboundAcceptance?> ReadAcceptanceAsync(
+        System.Data.Common.DbCommand command,
+        CancellationToken cancellationToken)
+    {
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        return await reader.ReadAsync(cancellationToken)
+            ? new OutboundAcceptance(
+                reader.GetInt64(0),
+                reader.GetInt64(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                IsExisting: true)
+            : null;
+    }
+
+    private static void RequireBoundedMetadata(string? metadata, string parameterName)
+    {
+        if (metadata is not null && metadata.Length > OutboundMessageRequest.MaxApplicationMetadataLength)
+        {
+            throw new ArgumentException(
+                $"The application metadata must be at most "
+                + $"{OutboundMessageRequest.MaxApplicationMetadataLength} characters.",
+                parameterName);
+        }
     }
 
     private static void RequireSender(string sender, string parameterName)

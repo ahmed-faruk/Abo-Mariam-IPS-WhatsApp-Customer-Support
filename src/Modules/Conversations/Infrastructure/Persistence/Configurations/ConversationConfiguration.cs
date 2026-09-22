@@ -22,6 +22,10 @@ internal sealed class ConversationConfiguration : IEntityTypeConfiguration<Conve
             .HasColumnName("mode")
             .HasDefaultValue(ConversationModes.Ai);
 
+        builder.Property(conversation => conversation.ModeRevision)
+            .HasColumnName("mode_revision")
+            .HasDefaultValue(0L);
+
         builder.Property(conversation => conversation.WindowExpiresAt).HasColumnName("window_expires_at");
         builder.Property(conversation => conversation.StartedAt).HasColumnName("started_at").HasDefaultValueSql("now()");
         builder.Property(conversation => conversation.LastInboundAt).HasColumnName("last_inbound_at");

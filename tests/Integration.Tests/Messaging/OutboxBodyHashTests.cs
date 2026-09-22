@@ -40,11 +40,11 @@ public sealed class OutboxBodyHashTests(PostgresContainerFixture postgres) : Mes
 
         await using (var scope = host.CreateScope())
         {
-            id = await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>()
+            id = (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>()
                 .EnqueueAsync(MessagingSamples.Outbound(
                     conversationId: 61,
                     customerExternalId: "20100006001",
-                    body: body));
+                    body: body))).OutboxMessageId;
         }
 
         Assert.True(id > 0);

@@ -19,9 +19,6 @@ public static class ConversationReasonCodes
     /// <summary>A stated resolution could not be read as a supported screen resolution.</summary>
     public const string ResolutionNotUnderstood = "ResolutionNotUnderstood";
 
-    /// <summary>The searched catalogue holds nothing that satisfies the stated filters.</summary>
-    public const string NoMatchUnderFilters = "NoMatchUnderFilters";
-
     /// <summary>The exact model code the customer named is unknown or currently unequipped.</summary>
     public const string ModelCodeNotAvailable = "ModelCodeNotAvailable";
 

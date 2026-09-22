@@ -153,7 +153,8 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
             var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
 
             inboxId = (await inbound.EnqueueAsync(MessagingSamples.Inbound("wamid.idle-1", "20100001001"))).InboxMessageId;
-            outboxId = await outbound.EnqueueAsync(MessagingSamples.Outbound(conversationId: 13, customerExternalId: "20100001002"));
+            outboxId = (await outbound.EnqueueAsync(
+                MessagingSamples.Outbound(conversationId: 13, customerExternalId: "20100001002"))).OutboxMessageId;
         }
 
         await using var workerScope = host.CreateScope();
@@ -183,10 +184,10 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
         await using var scope = host.CreateScope();
         var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
 
-        return await outbound.EnqueueAsync(MessagingSamples.Outbound(
+        return (await outbound.EnqueueAsync(MessagingSamples.Outbound(
             conversationId: 11,
             customerExternalId: "20100000701",
-            body: "the reply"));
+            body: "the reply"))).OutboxMessageId;
     }
 
     private MessagingHost StartHost(Action<IServiceCollection> configureServices) =>

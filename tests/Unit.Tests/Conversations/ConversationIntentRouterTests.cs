@@ -78,15 +78,21 @@ public sealed class ConversationIntentRouterTests
         Assert.Equal("Programming", query.UseCase);
 
         Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
-        Assert.Equal([10, 11], route.Intent.ModelIds);
-        Assert.Equal([21, 25], route.Intent.VariantIds);
 
-        // The shortlist is one-based in display order and the current reference is the first item. It is
-        // the displayed state, so the conversation may only reference it once the reply showing it is
-        // durably stored.
-        Assert.Equal([1, 2], route.DisplayedState!.Shortlist.Select(entry => entry.Position));
-        Assert.Equal(10, route.DisplayedState.LastModelId);
-        Assert.Equal(21, route.DisplayedState.LastVariantId);
+        // What the reply displays is decided by the final search the renderer runs, so the turn carries the
+        // effective query instead of a list it merely intended to show.
+        var effective = route.Intent.SearchQuery;
+
+        Assert.NotNull(effective);
+        Assert.Equal(query.Brand, effective.Brand);
+        Assert.Equal(query.SizeInches, effective.SizeInches);
+        Assert.Equal(query.PanelType, effective.PanelType);
+        Assert.Equal(query.MinResolutionWidth, effective.MinResolutionWidth);
+        Assert.Equal(query.MinResolutionHeight, effective.MinResolutionHeight);
+        Assert.Equal(query.RequiredPorts, effective.RequiredPorts);
+        Assert.Equal(query.Grades, effective.Grades);
+        Assert.Equal(query.Budget, effective.Budget);
+        Assert.Equal(query.UseCase, effective.UseCase);
 
         // The state stored as soon as the turn is accepted holds the customer's own filters and claims
         // nothing about a list that was not shown yet.
@@ -117,22 +123,44 @@ public sealed class ConversationIntentRouterTests
         Assert.Equal(5, route.State.LastModelId);
         Assert.Equal(51, route.State.LastVariantId);
 
-        // The new list travels as the displayed state.
-        Assert.Equal([10, 11], route.DisplayedState!.Shortlist.Select(entry => entry.ModelId));
-        Assert.Equal(10, route.DisplayedState.LastModelId);
+        // The new list travels as the effective search of the reply, so the renderer runs it again and the
+        // list the customer is shown is the current catalogue answer to it.
+        Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
+        Assert.NotNull(route.Intent.SearchQuery);
+        Assert.Empty(route.Intent.ModelIds);
+        Assert.Empty(route.Intent.VariantIds);
     }
 
     [Fact]
-    public async Task A_search_that_finds_nothing_displays_nothing_and_keeps_the_previous_list()
+    public async Task A_search_whose_routing_read_finds_nothing_still_carries_its_effective_query()
     {
         var harness = new RouterHarness();
         harness.Search.Results = [];
 
         var route = await harness.RouteAsync(
             NluIntent.ProductSearch,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductSearch,
+                brand: "Dell",
+                budgetType: NluBudgetType.Hard,
+                budgetTarget: 2500),
             state: StateWithShortlist((5, 51)));
 
-        Assert.Null(route.DisplayedState);
+        // The read the router makes is a routing-time read and is not what the customer is shown: the reply
+        // carries the effective query, and the final search immediately before the durable enqueue decides
+        // whether anything is displayed. A product that became available or affordable meanwhile is
+        // therefore still recommended instead of being answered with a stale fixed no-match.
+        Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
+        Assert.Null(route.Intent.ReasonCode);
+
+        var effective = route.Intent.SearchQuery;
+
+        Assert.NotNull(effective);
+        Assert.Equal("Dell", effective.Brand);
+        Assert.Equal(BudgetType.Hard, effective.Budget!.Type);
+        Assert.Equal(2500, effective.Budget.Target);
+
+        // The list the customer was already shown is untouched, and the turn claims no new one.
         Assert.Equal([5], route.State.Shortlist.Select(entry => entry.ModelId));
         Assert.Equal(5, route.State.LastModelId);
     }
@@ -280,15 +308,17 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
-    public async Task A_search_that_finds_nothing_is_a_deterministic_no_match()
+    public async Task A_search_whose_routing_read_finds_nothing_still_claims_no_new_displayed_list()
     {
         var harness = new RouterHarness();
         harness.Search.Results = [];
 
         var route = await harness.RouteAsync(NluIntent.ProductSearch);
 
-        Assert.Equal(ConversationResponseKind.NoMatch, route.Intent.Kind);
-        Assert.Equal(ConversationReasonCodes.NoMatchUnderFilters, route.Intent.ReasonCode);
+        // Nothing matched at routing time, so nothing is claimed to have been displayed: the final search
+        // the renderer runs is what either fills the accepted reply's list or answers a no-match.
+        Assert.Equal(ConversationResponseKind.ProductSearchResults, route.Intent.Kind);
+        Assert.NotNull(route.Intent.SearchQuery);
         Assert.Empty(route.State.Shortlist);
         Assert.Null(route.State.LastModelId);
         Assert.Null(route.State.LastVariantId);

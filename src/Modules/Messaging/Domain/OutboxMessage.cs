@@ -19,6 +19,12 @@ public sealed class OutboxMessage
 
     public byte[] BodyHash { get; set; } = [];
 
+    /// <summary>
+    /// Bounded opaque metadata written by the sending module. It is immutable after creation, exactly
+    /// like the body, and Messaging never interprets it.
+    /// </summary>
+    public string? ApplicationMetadata { get; set; }
+
     public string? ProviderMessageId { get; set; }
 
     public string DeliveryStatus { get; set; } = OutboxDeliveryStatuses.Pending;

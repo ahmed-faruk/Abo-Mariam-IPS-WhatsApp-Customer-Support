@@ -113,18 +113,141 @@ public sealed class OutboxCorrelationIdempotencyTests(PostgresContainerFixture p
         Assert.Equal("2", await catalog.ScalarAsync("SELECT count(*) FROM messaging.outbox_message"));
     }
 
+    [Fact]
+    public async Task A_stored_reply_exposes_the_body_and_the_metadata_a_retry_has_to_reconcile()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        var stored = await AcceptAsync(host, "the reply", metadata: """{"v":1}""");
+        var acceptance = await FindAsync(host);
+
+        Assert.NotNull(acceptance);
+        Assert.Equal(stored.OutboxMessageId, acceptance.OutboxMessageId);
+        Assert.Equal(81, acceptance.ConversationId);
+        Assert.Equal("the reply", acceptance.Body);
+        Assert.Equal("""{"v":1}""", acceptance.ApplicationMetadata);
+        Assert.True(acceptance.IsExisting);
+    }
+
+    [Fact]
+    public async Task A_duplicate_correlation_keeps_the_conversation_that_accepted_the_reply()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        var first = await AcceptAsync(host, "the first accepted reply", metadata: """{"v":1}""");
+
+        // A turn of another conversation replays the same correlation, and the acceptance it gets back has
+        // to report the conversation that really owns the durable reply rather than the one that asked.
+        var second = await AcceptAsync(
+            host,
+            "a reply of another conversation",
+            metadata: """{"v":1,"human":true}""",
+            conversationId: 82);
+
+        Assert.Equal(first.OutboxMessageId, second.OutboxMessageId);
+        Assert.Equal(81, second.ConversationId);
+        Assert.True(second.IsExisting);
+        Assert.Equal("the first accepted reply", second.Body);
+        Assert.Equal("""{"v":1}""", second.ApplicationMetadata);
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.outbox_message"));
+        Assert.Equal("81", await catalog.ScalarAsync(
+            "SELECT conversation_id FROM messaging.outbox_message"));
+    }
+
+    [Fact]
+    public async Task A_correlation_that_was_never_stored_is_absent()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        Assert.Null(await FindAsync(host));
+    }
+
+    [Fact]
+    public async Task A_duplicate_enqueue_never_replaces_the_originally_stored_metadata()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        var first = await AcceptAsync(host, "the first accepted reply", metadata: """{"v":1,"displayed":[]}""");
+        var second = await AcceptAsync(host, "a different reply", metadata: """{"v":1,"displayed":[{"m":9}]}""");
+
+        Assert.Equal(first.OutboxMessageId, second.OutboxMessageId);
+        Assert.True(second.IsExisting);
+        Assert.Equal("the first accepted reply", second.Body);
+        Assert.Equal("""{"v":1,"displayed":[]}""", second.ApplicationMetadata);
+        Assert.Equal(
+            """{"v":1,"displayed":[]}""",
+            await catalog.ScalarAsync(
+                $"SELECT application_metadata FROM messaging.outbox_message WHERE id = {first.OutboxMessageId}"));
+    }
+
+    [Fact]
+    public async Task Application_metadata_longer_than_the_bounded_column_is_refused()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+
+        var oversized = new string('x', OutboundMessageRequest.MaxApplicationMetadataLength + 1);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => EnqueueAsync(host, "the reply", metadata: oversized));
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.outbox_message"));
+    }
+
+    [Fact]
+    public async Task The_stored_application_metadata_column_is_bounded_and_nullable()
+    {
+        var definition = await catalog.ScalarAsync(
+            "SELECT data_type || '|' || coalesce(character_maximum_length::text, '') || '|' || is_nullable "
+            + "FROM information_schema.columns "
+            + "WHERE table_schema = 'messaging' AND table_name = 'outbox_message' "
+            + "AND column_name = 'application_metadata'");
+
+        Assert.Equal(
+            $"character varying|{OutboundMessageRequest.MaxApplicationMetadataLength}|YES",
+            definition);
+    }
+
     private static async Task<long> EnqueueAsync(
         MessagingHost host,
         string body,
-        string correlationId = Correlation)
+        string correlationId = Correlation,
+        string? metadata = null,
+        long conversationId = 81)
+    {
+        await using var scope = host.CreateScope();
+
+        return (await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
+            MessagingSamples.Outbound(
+                conversationId: conversationId,
+                customerExternalId: "20100000811",
+                body: body,
+                correlationId: correlationId,
+                applicationMetadata: metadata))).OutboxMessageId;
+    }
+
+    private static async Task<OutboundAcceptance> AcceptAsync(
+        MessagingHost host,
+        string body,
+        string correlationId = Correlation,
+        string? metadata = null,
+        long conversationId = 81)
     {
         await using var scope = host.CreateScope();
 
         return await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>().EnqueueAsync(
             MessagingSamples.Outbound(
-                conversationId: 81,
+                conversationId: conversationId,
                 customerExternalId: "20100000811",
                 body: body,
-                correlationId: correlationId));
+                correlationId: correlationId,
+                applicationMetadata: metadata));
+    }
+
+    private static async Task<OutboundAcceptance?> FindAsync(
+        MessagingHost host,
+        string correlationId = Correlation)
+    {
+        await using var scope = host.CreateScope();
+
+        return await scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>()
+            .FindByCorrelationAsync(correlationId);
     }
 }

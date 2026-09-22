@@ -13,6 +13,12 @@ internal sealed class ConversationTurnContext
     /// <summary>The stored mode value, one of <c>AI</c>, <c>Human</c> or <c>Closed</c>.</summary>
     internal required string Mode { get; set; }
 
+    /// <summary>
+    /// The revision of the stored mode this turn is working against. It is read with the mode, so a
+    /// handoff this turn makes durable can record exactly which decision it was made under.
+    /// </summary>
+    internal required long ModeRevision { get; set; }
+
     /// <summary>The service window after the accepted inbound was recorded.</summary>
     internal DateTime? WindowExpiresAt { get; set; }
 }

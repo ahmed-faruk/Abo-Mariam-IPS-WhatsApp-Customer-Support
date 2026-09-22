@@ -4,6 +4,7 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 using WhatsAppMonitorAssistant.Modules.Conversations.Features.ProcessInboundTurn;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
+using WhatsAppMonitorAssistant.Modules.Storefront.Contracts;
 
 namespace WhatsAppMonitorAssistant.Unit.Tests.Conversations;
 
@@ -28,6 +29,9 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
     public long ConversationId { get; set; } = 7;
 
     public string Mode { get; set; } = ConversationModes.Ai;
+
+    /// <summary>How many explicit mode decisions the stored conversation has had, as the real row counts them.</summary>
+    public long ModeRevision { get; set; }
 
     public DateTime? WindowExpiresAt { get; set; }
 
@@ -72,6 +76,7 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
             CustomerId = CustomerId,
             ConversationId = ConversationId,
             Mode = Mode,
+            ModeRevision = ModeRevision,
             WindowExpiresAt = WindowExpiresAt,
         });
     }
@@ -88,9 +93,16 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         CancellationToken cancellationToken)
     {
         Journal.Add("store:begin-final-operation");
+        OnBeginFinalOperation?.Invoke();
 
         return Task.FromResult<IConversationOperation>(new FakeConversationOperation(this, Journal));
     }
+
+    /// <summary>
+    /// Runs as the turn's final operation begins, so a test can interleave an operator action between the
+    /// mode the inbound was accepted with and the mode the final section reads again.
+    /// </summary>
+    public Action? OnBeginFinalOperation { get; set; }
 
     public Task AcceptInboundAsync(
         ConversationTurnContext context,
@@ -127,8 +139,15 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         CancellationToken cancellationToken)
     {
         Journal.Add($"store:set-mode:{mode}");
+
+        if (!string.Equals(Mode, mode, StringComparison.Ordinal))
+        {
+            ModeRevision++;
+        }
+
         Mode = mode;
         context.Mode = mode;
+        context.ModeRevision = ModeRevision;
         ModeChangeCount++;
 
         return Task.CompletedTask;
@@ -152,6 +171,24 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
     }
 
     /// <summary>
+    /// Applies one of the operator's own mode decisions the way the real mode control does: a decision that
+    /// really changes the mode advances the conversation's mode revision by one, and one that changes
+    /// nothing does not.
+    /// </summary>
+    public void OperatorDecides(string mode)
+    {
+        Journal.Add($"operator:decides:{mode}");
+
+        if (string.Equals(Mode, mode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Mode = mode;
+        ModeRevision++;
+    }
+
+    /// <summary>
     /// The serialized final section of one turn. The real operation takes a PostgreSQL lock that orders
     /// it against the operator's mode changes; here the same decision is observable through the journal:
     /// the mode is read again as it is stored now, and the commit releases the section.
@@ -160,11 +197,11 @@ internal sealed class FakeConversationTurnStore : IConversationTurnStore
         FakeConversationTurnStore store,
         List<string> journal) : IConversationOperation
     {
-        public Task<string> ReloadModeAsync(CancellationToken cancellationToken)
+        public Task<ConversationModeSnapshot> ReloadModeAsync(CancellationToken cancellationToken)
         {
             journal.Add("store:reload-mode");
 
-            return Task.FromResult(store.Mode);
+            return Task.FromResult(new ConversationModeSnapshot(store.Mode, store.ModeRevision));
         }
 
         public Task CommitAsync(CancellationToken cancellationToken)
@@ -193,6 +230,16 @@ internal sealed class FakeConversationRenderer : IConversationRenderer
 
     public string? Body { get; set; } = "the rendered reply";
 
+    /// <summary>Throws instead of answering, the way an unavailable catalogue read does.</summary>
+    public Func<ConversationResponseIntent, Exception>? Fails { get; set; }
+
+    /// <summary>
+    /// The ordered products the reply displays. It is the renderer's own answer, which is the only thing
+    /// that may make a list addressable, so a test states it independently of the route.
+    /// </summary>
+    public Func<ConversationResponseIntent, IReadOnlyList<(long ModelId, long VariantId)>> DisplayedCandidates
+    { get; set; } = _ => [];
+
     public Task<ConversationRenderResult> RenderAsync(
         ConversationResponseIntent intent,
         CancellationToken cancellationToken = default)
@@ -200,32 +247,108 @@ internal sealed class FakeConversationRenderer : IConversationRenderer
         Journal.Add("renderer:render");
         Intents.Add(intent);
 
-        return Task.FromResult(
-            Body is null ? ConversationRenderResult.NotRendered() : ConversationRenderResult.Rendered(Body));
+        if (Fails is { } failure)
+        {
+            return Task.FromException<ConversationRenderResult>(failure(intent));
+        }
+
+        if (Body is null)
+        {
+            return Task.FromResult(ConversationRenderResult.NotRendered());
+        }
+
+        return Task.FromResult(ConversationRenderResult.Rendered(
+            Body,
+            DisplayedCandidates(intent).Select(
+                pair => new ConversationDisplayedCandidate(pair.ModelId, pair.VariantId))));
     }
 }
 
 /// <summary>Records every durable outbound intent the orchestration asks for.</summary>
 internal sealed class RecordingOutboundMessageQueue : IOutboundMessageQueue
 {
+    private readonly Dictionary<string, OutboundAcceptance> accepted = [];
+
     public List<string> Journal { get; init; } = [];
 
     public List<OutboundMessageRequest> Requests { get; } = [];
 
     public long NextMessageId { get; set; } = 501;
 
+    /// <summary>The conversation this queue stores for, which is the one its requests name.</summary>
+    public long ConversationId { get; set; } = 7;
+
     public bool Fails { get; set; }
 
-    public Task<long> EnqueueAsync(
+    /// <summary>
+    /// The durable row another writer already holds the correlation with, so an enqueue of this queue
+    /// loses the conflict even though its own read found nothing.
+    /// </summary>
+    public OutboundAcceptance? ConflictingAcceptance { get; set; }
+
+    /// <summary>
+    /// Stores a durable reply the way an earlier attempt of the same turn would have, so a test can drive
+    /// the retry path with an already accepted correlation.
+    /// </summary>
+    /// <param name="conversationId">
+    /// The conversation the row was really accepted for, when a test needs a reply that belongs to a
+    /// different conversation than the turn under test.
+    /// </param>
+    public void PreStore(
+        string correlationId,
+        string body,
+        string? applicationMetadata = null,
+        long? conversationId = null) =>
+        accepted[correlationId] = new OutboundAcceptance(
+            NextMessageId,
+            conversationId ?? ConversationId,
+            body,
+            applicationMetadata,
+            IsExisting: true);
+
+    public Task<OutboundAcceptance?> FindByCorrelationAsync(
+        string correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        Journal.Add("outbox:find");
+
+        return Task.FromResult(accepted.TryGetValue(correlationId, out var existing) ? existing : null);
+    }
+
+    public Task<OutboundAcceptance> EnqueueAsync(
         OutboundMessageRequest request,
         CancellationToken cancellationToken = default)
     {
         Journal.Add("outbox:enqueue");
         Requests.Add(request);
 
-        return Fails
-            ? Task.FromException<long>(new InvalidOperationException("The durable Outbox refused the intent."))
-            : Task.FromResult(NextMessageId);
+        if (Fails)
+        {
+            return Task.FromException<OutboundAcceptance>(
+                new InvalidOperationException("The durable Outbox refused the intent."));
+        }
+
+        if (ConflictingAcceptance is { } conflict)
+        {
+            return Task.FromResult(conflict with { IsExisting = true });
+        }
+
+        if (accepted.TryGetValue(request.CorrelationId, out var existing))
+        {
+            // A correlation already has an immutable row, so its stored body and metadata win.
+            return Task.FromResult(existing with { IsExisting = true });
+        }
+
+        var stored = new OutboundAcceptance(
+            NextMessageId++,
+            request.ConversationId,
+            request.Body,
+            request.ApplicationMetadata,
+            IsExisting: false);
+
+        accepted[request.CorrelationId] = stored;
+
+        return Task.FromResult(stored);
     }
 }
 
@@ -262,13 +385,16 @@ internal sealed class FakeCatalogSearch : ICatalogSearch
 
     public ProductRecommendation? ModelCodeResult { get; set; }
 
+    /// <summary>Answers a specific query, so a test can show what the current catalogue returns now.</summary>
+    public Func<ProductSearchQuery, IReadOnlyList<ProductRecommendation>>? OnSearch { get; set; }
+
     public Task<IReadOnlyList<ProductRecommendation>> SearchAsync(
         ProductSearchQuery query,
         CancellationToken cancellationToken = default)
     {
         Queries.Add(query);
 
-        return Task.FromResult(Results);
+        return Task.FromResult(OnSearch?.Invoke(query) ?? Results);
     }
 
     public Task<ProductRecommendation?> FindByModelCodeAsync(
@@ -278,6 +404,30 @@ internal sealed class FakeCatalogSearch : ICatalogSearch
         LookedUpModelCodes.Add(modelCode);
 
         return Task.FromResult(ModelCodeResult);
+    }
+}
+
+/// <summary>The Storefront business-info contract, answering from fixed test data.</summary>
+internal sealed class FakeStorefrontBusinessInfo : IStorefrontBusinessInfo
+{
+    public Dictionary<string, BusinessInfoValue> Values { get; } = [];
+
+    public List<string> RequestedKeys { get; } = [];
+
+    /// <summary>Throws instead of answering, the way an unavailable Storefront read does.</summary>
+    public bool Fails { get; set; }
+
+    /// <summary>Publishes one active stored answer, the way a seeded Storefront row would answer.</summary>
+    public void Publish(string key, string answerAr) =>
+        Values[key] = new BusinessInfoValue(key, answerAr, null, IsActive: true, ConversationSamples.Now);
+
+    public Task<BusinessInfoValue?> GetByKeyAsync(string key, CancellationToken cancellationToken = default)
+    {
+        RequestedKeys.Add(key);
+
+        return Fails
+            ? Task.FromException<BusinessInfoValue?>(new InvalidOperationException("Storefront is unavailable."))
+            : Task.FromResult(Values.TryGetValue(key, out var value) ? value : null);
     }
 }
 
@@ -312,8 +462,41 @@ internal sealed class FakeCatalogProductDetails : ICatalogProductDetails
         RequestedVariantIds.Add(productVariantId);
 
         // Routing revalidates through GetDetailsAsync, because only that shape distinguishes a retired
-        // row from an active one that currently has no stock.
-        return Task.FromResult<ProductRecommendation?>(null);
+        // row from an active one that currently has no stock. This shape answers the current facts of one
+        // variant, which is what a reply about a single product reads.
+        var published = Models.Values
+            .SelectMany(details => details.Variants.Select(variant => (Details: details, Variant: variant)))
+            .FirstOrDefault(candidate => candidate.Variant.VariantId == productVariantId);
+
+        if (published.Details is null || published.Variant is null)
+        {
+            return Task.FromResult<ProductRecommendation?>(null);
+        }
+
+        return Task.FromResult<ProductRecommendation?>(new ProductRecommendation
+        {
+            ModelId = published.Details.ModelId,
+            ModelCode = published.Details.ModelCode,
+            Brand = published.Details.Brand,
+            Model = published.Details.Model,
+            DisplayName = published.Details.DisplayName,
+            SizeInches = published.Details.SizeInches,
+            PanelType = published.Details.PanelType,
+            ResolutionWidth = published.Details.ResolutionWidth,
+            ResolutionHeight = published.Details.ResolutionHeight,
+            RefreshRate = published.Details.RefreshRate,
+            Tags = published.Details.Tags,
+            Ports = [.. published.Details.Ports.Select(port => port.PortType)],
+            VariantId = published.Variant.VariantId,
+            Sku = published.Variant.Sku,
+            Grade = published.Variant.Grade,
+            Price = published.Variant.Price,
+            Quantity = published.Variant.Quantity,
+            WarrantyDays = published.Variant.WarrantyDays,
+            WarrantyNotes = published.Variant.WarrantyNotes,
+            CosmeticNotes = published.Variant.CosmeticNotes,
+            IsAvailable = published.Details.IsActive && published.Variant.IsActive && published.Variant.Quantity > 0,
+        });
     }
 }
 
