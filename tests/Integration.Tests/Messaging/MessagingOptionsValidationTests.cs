@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Messaging;
@@ -87,12 +88,89 @@ public sealed class MessagingOptionsValidationTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_default_transport_budget_fits_inside_the_default_claim_lease()
+    {
+        using var provider = BuildTransportProvider(_ => { }, _ => { });
+
+        var options = ResolveWhatsAppOptions(provider);
+
+        Assert.True(options.TimeoutSeconds > 0);
+    }
+
+    [Theory]
+    [InlineData(300)]
+    [InlineData(301)]
+    [InlineData(270)]
+    public void A_transport_budget_that_cannot_finish_inside_the_claim_lease_is_rejected(int timeoutSeconds)
+    {
+        using var provider = BuildTransportProvider(
+            queue => queue.ClaimLeaseDuration = TimeSpan.FromMinutes(5),
+            whatsApp => whatsApp.TimeoutSeconds = timeoutSeconds);
+
+        var exception = Assert.Throws<OptionsValidationException>(() => _ = ResolveWhatsAppOptions(provider));
+
+        Assert.Contains(nameof(WhatsAppOptions.TimeoutSeconds), exception.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(MessagingQueueOptions.ClaimLeaseDuration), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_transport_budget_with_room_for_its_bookkeeping_margin_is_accepted()
+    {
+        using var provider = BuildTransportProvider(
+            queue => queue.ClaimLeaseDuration = TimeSpan.FromMinutes(5),
+            whatsApp => whatsApp.TimeoutSeconds = 269);
+
+        Assert.Equal(269, ResolveWhatsAppOptions(provider).TimeoutSeconds);
+    }
+
+    [Fact]
+    public void The_transport_budget_error_never_echoes_a_WhatsApp_secret()
+    {
+        using var provider = BuildTransportProvider(
+            queue => queue.ClaimLeaseDuration = TimeSpan.FromMinutes(1),
+            whatsApp => whatsApp.TimeoutSeconds = 60);
+
+        var exception = Assert.Throws<OptionsValidationException>(() => _ = ResolveWhatsAppOptions(provider));
+
+        foreach (var secret in new[] { TestVerifyToken, TestAppSecret, TestAccessToken })
+        {
+            Assert.DoesNotContain(secret, exception.Message, StringComparison.Ordinal);
+        }
+    }
+
+    private const string TestVerifyToken = "test-verify-token";
+    private const string TestAppSecret = "test-app-secret";
+    private const string TestAccessToken = "test-access-token";
+
     private static ServiceProvider BuildProvider(Action<MessagingQueueOptions> configure) =>
         new ServiceCollection()
             .AddLogging()
             .AddMessagingModule(UnusedConnectionString, configure)
             .BuildServiceProvider();
 
+    private static ServiceProvider BuildTransportProvider(
+        Action<MessagingQueueOptions> configureQueue,
+        Action<WhatsAppOptions> configureWhatsApp) =>
+        new ServiceCollection()
+            .AddLogging()
+            .AddMessagingModule(
+                UnusedConnectionString,
+                configureQueue,
+                options =>
+                {
+                    options.ApiVersion = "v23.0";
+                    options.PhoneNumberId = "123";
+                    options.VerifyToken = TestVerifyToken;
+                    options.AppSecret = TestAppSecret;
+                    options.AccessToken = TestAccessToken;
+                    configureWhatsApp(options);
+                })
+            .BuildServiceProvider();
+
     private static MessagingQueueOptions ResolveQueueOptions(IServiceProvider provider) =>
         provider.GetRequiredService<IOptions<MessagingQueueOptions>>().Value;
+
+    private static WhatsAppOptions ResolveWhatsAppOptions(IServiceProvider provider) =>
+        provider.GetRequiredService<IOptions<WhatsAppOptions>>().Value;
 }

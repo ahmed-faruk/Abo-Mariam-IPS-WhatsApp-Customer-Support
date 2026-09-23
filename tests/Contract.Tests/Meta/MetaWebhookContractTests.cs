@@ -3,8 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
@@ -172,6 +170,26 @@ public sealed class MetaWebhookContractTests
     }
 
     [Fact]
+    public async Task A_duplicate_delivery_is_acknowledged_without_a_second_work_item()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = TextPayload("wamid.duplicate", "20100000010", "hello");
+
+        using var first = SignedRequest(body);
+        var firstResponse = await server.CreateClient().SendAsync(first);
+        using var duplicate = SignedRequest(body);
+        var duplicateResponse = await server.CreateClient().SendAsync(duplicate);
+
+        // Meta retries a delivery it did not see acknowledged: the retry is accepted, and the durable
+        // provider-message deduplication of the queue leaves exactly one logical work item behind.
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, duplicateResponse.StatusCode);
+        var accepted = Assert.Single(queue.Envelopes);
+        Assert.Equal("wamid.duplicate", accepted.ProviderMessageId);
+    }
+
+    [Fact]
     public async Task Malformed_relevant_message_payload_is_rejected_before_any_persistence()
     {
         var queue = new CapturingInboundQueue();
@@ -284,6 +302,58 @@ public sealed class MetaWebhookContractTests
         Assert.Equal((HttpStatusCode)429, (await server.CreateClient().SendAsync(second)).StatusCode);
     }
 
+    [Fact]
+    public async Task Unauthenticated_traffic_cannot_consume_the_authenticated_delivery_budget()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue, permitLimit: 1);
+        var body = TextPayload("wamid.budget", "20100000011", "hello");
+
+        // Public traffic that fails the signature check is rejected without touching the delivery
+        // budget, so it can never starve a genuine Meta callback of its permit.
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var unsigned = new HttpRequestMessage(HttpMethod.Post, WhatsAppWebhookEndpoints.Path)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json"),
+            };
+
+            Assert.Equal(
+                HttpStatusCode.Forbidden,
+                (await server.CreateClient().SendAsync(unsigned)).StatusCode);
+        }
+
+        Assert.Empty(queue.Envelopes);
+
+        // The budget is untouched, so the first authenticated delivery fits and the next one in the
+        // same window is refused.
+        using var valid = SignedRequest(body);
+        Assert.Equal(HttpStatusCode.OK, (await server.CreateClient().SendAsync(valid)).StatusCode);
+
+        using var excess = SignedRequest(body);
+        Assert.Equal((HttpStatusCode)429, (await server.CreateClient().SendAsync(excess)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Verification_get_is_not_subject_to_the_authenticated_delivery_budget()
+    {
+        using var server = Server(permitLimit: 1);
+        var client = server.CreateClient();
+
+        using var first = SignedRequest(TextPayload("wamid.verify-budget", "20100000012", "hello"));
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(first)).StatusCode);
+        using var excess = SignedRequest(TextPayload("wamid.verify-budget-2", "20100000012", "hello"));
+        Assert.Equal((HttpStatusCode)429, (await client.SendAsync(excess)).StatusCode);
+
+        // Setup verification is what enables the webhook in the first place, so the exhausted delivery
+        // budget of a live endpoint may not disable it.
+        var verification = await client.GetAsync(
+            $"{WhatsAppWebhookEndpoints.Path}?hub.mode=subscribe&hub.verify_token={VerifyToken}&hub.challenge=abc123");
+
+        Assert.Equal(HttpStatusCode.OK, verification.StatusCode);
+        Assert.Equal("abc123", await verification.Content.ReadAsStringAsync());
+    }
+
     private static TestServer Server(
         CapturingInboundQueue? queue = null,
         int maxWebhookBodyBytes = WhatsAppOptions.DefaultMaxWebhookBodyBytes,
@@ -295,15 +365,6 @@ public sealed class MetaWebhookContractTests
             .ConfigureServices(services =>
             {
                 services.AddRouting();
-                services.AddRateLimiter(options =>
-                {
-                    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-                    options.AddFixedWindowLimiter(WhatsAppRateLimit.PolicyName, limiter =>
-                    {
-                        limiter.PermitLimit = permitLimit;
-                        limiter.Window = TimeSpan.FromMinutes(1);
-                    });
-                });
                 services.AddSingleton(new WhatsAppOptions
                 {
                     ApiVersion = "v23.0",
@@ -313,13 +374,15 @@ public sealed class MetaWebhookContractTests
                     AccessToken = "access-token",
                     MaxWebhookBodyBytes = maxWebhookBodyBytes,
                     WebhookPermitLimit = permitLimit,
+                    WebhookWindowSeconds = 60,
                 });
+                services.AddSingleton(provider =>
+                    new WhatsAppWebhookDeliveryLimiter(provider.GetRequiredService<WhatsAppOptions>()));
                 services.AddSingleton<IInboundMessageQueue>(queue);
             })
             .Configure(app =>
             {
                 app.UseRouting();
-                app.UseRateLimiter();
                 app.UseEndpoints(endpoints => endpoints.MapWhatsAppWebhookEndpoints());
             });
 
@@ -355,6 +418,7 @@ public sealed class MetaWebhookContractTests
 
     private sealed class CapturingInboundQueue : IInboundMessageQueue
     {
+        private readonly HashSet<string> acceptedProviderMessageIds = [];
         private int attempts;
 
         public List<InboundMessageEnvelope> Envelopes { get; } = [];
@@ -370,6 +434,13 @@ public sealed class MetaWebhookContractTests
             if (FailOnAttempt == attempts)
             {
                 throw new InvalidOperationException("database commit failed");
+            }
+
+            // The durable queue deduplicates by provider message id, so a repeated delivery of the same
+            // message is a no-op that leaves one logical work item: it is acknowledged without another.
+            if (!acceptedProviderMessageIds.Add(envelope.ProviderMessageId))
+            {
+                return Task.FromResult(new InboundEnqueueResult(Envelopes.Count, IsDuplicate: true));
             }
 
             Envelopes.Add(envelope);

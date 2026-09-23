@@ -108,7 +108,9 @@ public sealed class MetaOutboundMessageSenderContractTests
         stopwatch.Stop();
 
         Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
-        Assert.Equal(MetaOutboundMessageSender.TimeoutDiagnostic, result.Error);
+        // The expected diagnostic is the stable contract value, kept independent of the production
+        // constant: a regression that renamed or reworded the diagnostic must fail this test.
+        Assert.Equal("MetaUnknownTimeout", result.Error);
         Assert.Null(result.ProviderMessageId);
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"The attempt lasted {stopwatch.Elapsed}.");
     }
@@ -155,7 +157,7 @@ public sealed class MetaOutboundMessageSenderContractTests
         var result = await sender.SendAsync(Message());
 
         Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
-        Assert.Equal(MetaOutboundMessageSender.ResponseTooLargeDiagnostic, result.Error);
+        Assert.Equal("MetaResponseTooLarge", result.Error);
         Assert.Null(result.ProviderMessageId);
     }
 
@@ -170,7 +172,7 @@ public sealed class MetaOutboundMessageSenderContractTests
         var result = await sender.SendAsync(Message());
 
         Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
-        Assert.Equal(MetaOutboundMessageSender.MalformedSuccessDiagnostic, result.Error);
+        Assert.Equal("MetaMalformedSuccessResponse", result.Error);
         Assert.Null(result.ProviderMessageId);
     }
 
@@ -188,7 +190,7 @@ public sealed class MetaOutboundMessageSenderContractTests
         var result = await sender.SendAsync(Message());
 
         Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
-        Assert.Equal(MetaOutboundMessageSender.MalformedSuccessDiagnostic, result.Error);
+        Assert.Equal("MetaMalformedSuccessResponse", result.Error);
         Assert.Null(result.ProviderMessageId);
     }
 
@@ -218,6 +220,26 @@ public sealed class MetaOutboundMessageSenderContractTests
 
         var result = await sender.SendAsync(Message());
 
+        Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
+    }
+
+    [Theory]
+    [InlineData(130429)]
+    [InlineData(131000)]
+    [InlineData(131057)]
+    [InlineData(131047)]
+    [InlineData(999999)]
+    public async Task A_server_error_stays_unknown_whatever_provider_code_its_body_carries(int code)
+    {
+        var sender = Sender(new CapturingHandler(new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = Json("{\"error\":{\"code\":" + code + ",\"message\":\"provider text\"}}"),
+        }));
+
+        var result = await sender.SendAsync(Message());
+
+        // A 5xx cannot prove that Meta refused the request, so acceptance stays uncertain and the
+        // attempt is never described as a known unsuccessful outcome on the strength of a body code.
         Assert.Equal(OutboundSendOutcome.Unknown, result.Outcome);
     }
 

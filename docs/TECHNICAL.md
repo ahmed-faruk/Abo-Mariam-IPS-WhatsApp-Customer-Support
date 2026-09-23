@@ -818,8 +818,16 @@ Conversations.ProcessInboundTurn
 `window_expires_at` updates only on inbound customer messages, and is
 `provider_timestamp + 24 hours`.
 
-Before every reactive free-form send, ensure the window is still open: it is open only while the expiry
-is strictly in the future, so the expiry instant itself is closed.
+Before every new reactive free-form send, ensure the window is still open: it is open only while the
+expiry is strictly in the future, so the expiry instant itself is closed. This is a gate on creating a
+new durable Outbox reply, so Conversations evaluates it against the current clock immediately before it
+asks Messaging to accept that new reply, and no free-form reply is enqueued while the window is closed.
+
+Once an immutable Outbox reply has already been durably accepted while it was authorized, its later
+delivery or retry is not a new free-form send and is not re-gated against a window that closed since.
+The accepted row is what the customer's turn produced, so a retry of its inbound correlation reconciles
+that same durable reply instead of rendering another one, and the transport retry of the accepted row
+keeps its place in the durable Outbox exactly as any other durable intent does.
 
 Lean demo contains no proactive template workflow. If closed:
 

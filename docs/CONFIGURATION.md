@@ -93,6 +93,12 @@ The Messaging module reads Meta WhatsApp settings from the `WhatsApp` section.
 
 Real secrets belong in user-secrets or environment variables, never in committed configuration.
 
+`WhatsApp:TimeoutSeconds` is bounded by a policy the operator must respect when raising it:
+`Host.Web` refuses to start unless the complete outbound attempt plus its completion-bookkeeping margin
+stays strictly inside the Outbox claim lease. A lease that expires while an attempt is still in flight
+would let another replica recover and send the same message again, so an over-long timeout fails
+startup instead of being silently capped.
+
 ```bash
 dotnet user-secrets set "WhatsApp:ApiVersion" "<graph-version>" --project src/Host.Web
 dotnet user-secrets set "WhatsApp:PhoneNumberId" "<phone-number-id>" --project src/Host.Web

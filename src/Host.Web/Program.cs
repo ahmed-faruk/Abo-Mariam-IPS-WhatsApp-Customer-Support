@@ -9,7 +9,6 @@ builder.Services.AddApplicationComposition(builder.Configuration);
 var app = builder.Build();
 
 app.MapHealthEndpoints();
-app.UseRateLimiter();
 app.MapWhatsAppWebhookEndpoints();
 
 await app.RunAsync();

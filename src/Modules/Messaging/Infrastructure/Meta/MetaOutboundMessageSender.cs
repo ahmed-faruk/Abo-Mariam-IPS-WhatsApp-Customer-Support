@@ -127,21 +127,20 @@ internal sealed class MetaOutboundMessageSender(
                 RetryAfter(response));
         }
 
-        if (error.Code is int code)
-        {
-            if (RetryableMetaCodes.Contains(code))
-            {
-                return OutboundSendResult.RetryableFailure(
-                    Diagnostic("MetaRetryableFailure", status, code),
-                    RetryAfter(response));
-            }
-        }
-
         // A 5xx never proves that Meta refused the request, whatever the body carries, so acceptance
-        // stays uncertain and the attempt is never dead-lettered on the strength of the status class.
+        // stays uncertain and the attempt is never described as a known unsuccessful outcome. This is
+        // checked before any provider-code classification, because a 5xx carrying a retryable or a
+        // permanent code is still an unproven acceptance and must not be flattened into either.
         if (status >= 500)
         {
             return OutboundSendResult.Unknown(fallback);
+        }
+
+        if (error.Code is int code && RetryableMetaCodes.Contains(code))
+        {
+            return OutboundSendResult.RetryableFailure(
+                Diagnostic("MetaRetryableFailure", status, code),
+                RetryAfter(response));
         }
 
         if (error.Code is int permanentCode && PermanentMetaCodes.Contains(permanentCode))

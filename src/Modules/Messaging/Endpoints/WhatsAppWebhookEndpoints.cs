@@ -27,7 +27,7 @@ public static class WhatsAppWebhookEndpoints
         ArgumentNullException.ThrowIfNull(endpoints);
 
         endpoints.MapGet(Path, VerifyAsync);
-        endpoints.MapPost(Path, AcceptAsync).RequireRateLimiting(WhatsAppRateLimit.PolicyName);
+        endpoints.MapPost(Path, AcceptAsync);
 
         return endpoints;
     }
@@ -52,6 +52,7 @@ public static class WhatsAppWebhookEndpoints
         HttpRequest request,
         WhatsAppOptions options,
         IInboundMessageQueue queue,
+        WhatsAppWebhookDeliveryLimiter deliveryLimiter,
         CancellationToken cancellationToken)
     {
         if (request.ContentLength > options.MaxWebhookBodyBytes)
@@ -69,6 +70,14 @@ public static class WhatsAppWebhookEndpoints
         if (!SignatureIsValid(request, options, bodyBytes))
         {
             return Results.StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        // The delivery budget belongs to the authenticated Meta traffic only, so it is taken after the
+        // signature proves this request really came from Meta: public traffic that fails the check above
+        // can never exhaust the permits a genuine callback needs.
+        if (!deliveryLimiter.TryAcquire())
+        {
+            return Results.StatusCode(StatusCodes.Status429TooManyRequests);
         }
 
         string rawBody;

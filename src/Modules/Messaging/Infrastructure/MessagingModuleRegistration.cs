@@ -1,9 +1,7 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Microsoft.AspNetCore.RateLimiting;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Endpoints;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Meta;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Workers;
@@ -45,23 +43,16 @@ public static class MessagingModuleRegistration
             .Configure(options => Copy(configured, options));
 
         whatsAppOptions.Services.AddSingleton<IValidateOptions<WhatsAppOptions>, WhatsAppOptionsValidator>();
+        whatsAppOptions.Services.AddSingleton<IValidateOptions<WhatsAppOptions>, WhatsAppAttemptBudgetValidator>();
         whatsAppOptions.ValidateOnStart();
 
         services.AddSingleton(provider => provider.GetRequiredService<IOptions<WhatsAppOptions>>().Value);
+        services.AddSingleton(provider =>
+            new WhatsAppWebhookDeliveryLimiter(provider.GetRequiredService<WhatsAppOptions>()));
         services.AddHttpClient<IOutboundMessageSender, MetaOutboundMessageSender>((provider, client) =>
         {
             var options = provider.GetRequiredService<WhatsAppOptions>();
             client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
-        });
-        services.AddRateLimiter(options =>
-        {
-            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
-            options.AddFixedWindowLimiter(WhatsAppRateLimit.PolicyName, limiter =>
-            {
-                limiter.PermitLimit = configured.WebhookPermitLimit;
-                limiter.Window = TimeSpan.FromSeconds(configured.WebhookWindowSeconds);
-                limiter.QueueLimit = 0;
-            });
         });
     }
 

@@ -329,7 +329,6 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
             .Configure(app =>
             {
                 app.UseRouting();
-                app.UseRateLimiter();
                 app.UseEndpoints(endpoints => endpoints.MapWhatsAppWebhookEndpoints());
             });
 
