@@ -1,4 +1,5 @@
 using System.Net;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
@@ -92,19 +93,23 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
             """;
         using var request = SignedRequest(body);
 
-        await using var acceptedByTest = await BlockEnvelopeInsertAsync();
+        await using var acceptance = await BlockEnvelopeInsertAsync();
 
         var responseTask = server.CreateClient().SendAsync(request);
 
+        // The endpoint is proven to have reached the blocked envelope insert, not merely assumed to
+        // have reached it after a delay: the insert advances a test-only sequence marker before it
+        // blocks, and a sequence increment is visible to this connection while that insert's own
+        // transaction is still uncommitted.
+        await WaitUntilEnvelopeInsertIsReachedAsync(acceptance.ReachedBaseline, responseTask);
+
         // The acceptance is held inside its database transaction, so the endpoint cannot have
         // answered yet: the 200 follows the commit, it is not the handler returning.
-        await Task.Delay(TimeSpan.FromSeconds(2));
-
         Assert.False(responseTask.IsCompleted);
         Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
         Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
 
-        await ReleaseEnvelopeInsertAsync(acceptedByTest);
+        await acceptance.ReleaseAsync();
 
         var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(30));
 
@@ -197,15 +202,20 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     }
 
     /// <summary>
-    /// Holds the real durable acceptance of this database inside its transaction by blocking the
-    /// envelope insert, so the test can observe the HTTP response that has not happened yet.
+    /// Holds the real durable acceptance of this database inside its transaction: the envelope insert
+    /// first advances a test-only sequence marker and then blocks on an advisory lock this test keeps
+    /// held, so the test can observe that the request reached the insert while it is still blocked.
     /// </summary>
-    private async Task<NpgsqlConnection> BlockEnvelopeInsertAsync()
+    private async Task<BlockedAcceptance> BlockEnvelopeInsertAsync()
     {
         await catalog.ExecuteAsync(
             """
+            CREATE SEQUENCE messaging.test_envelope_insert_reached;
+            SELECT nextval('messaging.test_envelope_insert_reached');
+
             CREATE FUNCTION messaging.test_block_envelope_insert() RETURNS trigger AS $function$
             BEGIN
+                PERFORM nextval('messaging.test_envelope_insert_reached');
                 PERFORM pg_advisory_xact_lock(918273645);
 
                 RETURN NEW;
@@ -224,16 +234,76 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
 
         await command.ExecuteNonQueryAsync();
 
-        return connection;
+        var reachedBaseline = long.Parse(
+            await catalog.ScalarAsync("SELECT last_value FROM messaging.test_envelope_insert_reached"),
+            CultureInfo.InvariantCulture);
+
+        return new BlockedAcceptance(connection, reachedBaseline);
     }
 
-    private static async Task ReleaseEnvelopeInsertAsync(NpgsqlConnection connection)
+    /// <summary>
+    /// Waits for the durable acceptance to report that it reached the blocked insert, using the
+    /// database as the synchronization point instead of a fixed delay. The timeout is only a guard so
+    /// a request that never reaches persistence fails the test instead of hanging it.
+    /// </summary>
+    private async Task WaitUntilEnvelopeInsertIsReachedAsync(long baseline, Task<HttpResponseMessage> responseTask)
     {
-        await using var command = new NpgsqlCommand("SELECT pg_advisory_unlock(918273645)", connection);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
 
-        await command.ExecuteNonQueryAsync();
+        while (true)
+        {
+            var reached = long.Parse(
+                await catalog.ScalarAsync("SELECT last_value FROM messaging.test_envelope_insert_reached"),
+                CultureInfo.InvariantCulture);
 
-        await connection.DisposeAsync();
+            if (reached > baseline)
+            {
+                return;
+            }
+
+            Assert.False(
+                responseTask.IsCompleted,
+                "The webhook answered before it reached the blocked durable acceptance.");
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                Assert.Fail($"The webhook never reached the blocked durable acceptance; the marker stayed at {baseline}.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25));
+        }
+    }
+
+    /// <summary>
+    /// The advisory lock this test holds to keep one envelope insert inside its transaction, released
+    /// explicitly so the request can finish, and released again on dispose so a failed assertion
+    /// cannot leak the lock.
+    /// </summary>
+    private sealed class BlockedAcceptance(NpgsqlConnection connection, long reachedBaseline) : IAsyncDisposable
+    {
+        private bool released;
+
+        public long ReachedBaseline { get; } = reachedBaseline;
+
+        public async Task ReleaseAsync()
+        {
+            if (released)
+            {
+                return;
+            }
+
+            released = true;
+
+            await using var command = new NpgsqlCommand("SELECT pg_advisory_unlock(918273645)", connection);
+
+            await command.ExecuteNonQueryAsync();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await ReleaseAsync();
+            await connection.DisposeAsync();
+        }
     }
 
     private TestServer Server()
