@@ -20,6 +20,10 @@ namespace WhatsAppMonitorAssistant.Integration.Tests.Messaging;
 public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres) : IAsyncLifetime
 {
     private const string AppSecret = "test-app-secret";
+
+    /// <summary>The business number this host is configured to receive for.</summary>
+    private const string PhoneNumberId = "123";
+
     private string connectionString = string.Empty;
     private DatabaseCatalogReader catalog = null!;
 
@@ -36,7 +40,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     {
         using var server = Server();
         const string body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004001","id":"wamid.http-1","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004001","id":"wamid.http-1","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
             """;
         using var request = SignedRequest(body);
 
@@ -54,7 +58,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     {
         using var server = Server();
         const string body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004002","id":"wamid.http-2","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004002","id":"wamid.http-2","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
             """;
 
         using var first = SignedRequest(body);
@@ -68,11 +72,29 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     }
 
     [Fact]
+    public async Task A_signed_callback_for_another_phone_number_is_acknowledged_without_inbox_work()
+    {
+        using var server = Server();
+        const string body = """
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550009999","phone_number_id":"456"},"messages":[{"from":"20100004008","id":"wamid.http-8","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            """;
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        // The callback is authentic and well formed, but it was received by another subscribed business
+        // number, so this deployment acknowledges it without retries and stores nothing.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+    }
+
+    [Fact]
     public async Task Multi_message_retry_deduplicates_the_already_committed_message_and_accepts_the_missing_one()
     {
         using var server = Server();
         const string retryBody = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004003","id":"wamid.http-3a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100004003","id":"wamid.http-3b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004003","id":"wamid.http-3a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100004003","id":"wamid.http-3b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
             """;
         await InsertPrefixAsync(retryBody);
         using var request = SignedRequest(retryBody);
@@ -89,7 +111,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     {
         using var server = Server();
         const string body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004005","id":"wamid.http-5","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004005","id":"wamid.http-5","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
             """;
         using var request = SignedRequest(body);
 
@@ -126,7 +148,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     {
         using var server = Server();
         const string body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004006","id":"wamid.http-6","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004006","id":"wamid.http-6","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
             """;
 
         await catalog.ExecuteAsync(
@@ -157,7 +179,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
     {
         using var server = Server();
         const string body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004007","id":"wamid.http-7a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100004007","id":"wamid.http-7b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
+            {"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001234","phone_number_id":"123"},"messages":[{"from":"20100004007","id":"wamid.http-7a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100004007","id":"wamid.http-7b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
             """;
 
         // Only the second message is rejected by the database, so the first genuinely commits inside
@@ -318,7 +340,7 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
                     configureWhatsApp: options =>
                     {
                         options.ApiVersion = "v23.0";
-                        options.PhoneNumberId = "123";
+                        options.PhoneNumberId = PhoneNumberId;
                         options.WabaId = "456";
                         options.VerifyToken = "verify";
                         options.AppSecret = AppSecret;

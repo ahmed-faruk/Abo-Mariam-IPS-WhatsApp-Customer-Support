@@ -95,7 +95,7 @@ public static class WhatsAppWebhookEndpoints
 
         try
         {
-            messages = ParseCustomerMessages(rawBody);
+            messages = ParseCustomerMessages(rawBody, options.PhoneNumberId);
         }
         catch (JsonException)
         {
@@ -195,7 +195,15 @@ public static class WhatsAppWebhookEndpoints
         return CryptographicOperations.FixedTimeEquals(actual, expected);
     }
 
-    private static IReadOnlyList<ParsedInboundMessage> ParseCustomerMessages(string rawBody)
+    /// <summary>
+    /// Reads every customer message the deployment owns out of one authenticated notification. A
+    /// value that carries <c>messages[]</c> must name the receiving business number in
+    /// <c>metadata.phone_number_id</c>: the outbound adapter always sends through the configured
+    /// number, so a well-formed collection for another subscribed number is ignored rather than
+    /// answered through the wrong one, and a collection that cannot prove which number received it is
+    /// malformed. The whole relevant structure is validated before any caller persists anything.
+    /// </summary>
+    private static IReadOnlyList<ParsedInboundMessage> ParseCustomerMessages(string rawBody, string phoneNumberId)
     {
         using var document = JsonDocument.Parse(rawBody);
         var root = document.RootElement;
@@ -256,6 +264,18 @@ public static class WhatsAppWebhookEndpoints
                     throw new FormatException("The Meta messages property must be an array.");
                 }
 
+                // Only this deployment's messages may become Inbox work. A different but well-formed
+                // number is an authenticated event that belongs to another business number, so it is
+                // skipped without failing the request; a collection that cannot name its receiving
+                // number at all is malformed.
+                if (!string.Equals(
+                    RequiredMetadataPhoneNumberId(value),
+                    phoneNumberId,
+                    StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 foreach (var message in messageElements.EnumerateArray())
                 {
                     if (TryParseCustomerMessage(message, out var parsed))
@@ -267,6 +287,26 @@ public static class WhatsAppWebhookEndpoints
         }
 
         return messages;
+    }
+
+    /// <summary>
+    /// The business number that received a value's <c>messages[]</c>, from the provider's own
+    /// <c>metadata</c>. A value that carries customer messages but cannot name that number is
+    /// malformed, because the deployment cannot prove the messages are addressed to it.
+    /// </summary>
+    private static string RequiredMetadataPhoneNumberId(JsonElement value)
+    {
+        if (!value.TryGetProperty("metadata", out var metadata)
+            || metadata.ValueKind != JsonValueKind.Object
+            || !metadata.TryGetProperty("phone_number_id", out var phoneNumberId)
+            || phoneNumberId.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(phoneNumberId.GetString()))
+        {
+            throw new FormatException(
+                "A Meta value carrying customer messages must name the receiving phone_number_id in metadata.");
+        }
+
+        return phoneNumberId.GetString()!;
     }
 
     private static bool TryParseCustomerMessage(JsonElement message, out ParsedInboundMessage parsed)

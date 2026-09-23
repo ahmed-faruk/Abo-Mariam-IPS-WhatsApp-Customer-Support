@@ -17,6 +17,12 @@ public sealed class MetaWebhookContractTests
     private const string AppSecret = "test-app-secret";
     private const string VerifyToken = "verify-token";
 
+    /// <summary>The business number this test host is configured to receive for.</summary>
+    private const string PhoneNumberId = "123";
+
+    /// <summary>A second subscribed business number this deployment must never answer for.</summary>
+    private const string OtherPhoneNumberId = "456";
+
     [Fact]
     public async Task Verification_returns_the_challenge_when_the_token_matches()
     {
@@ -109,7 +115,9 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue();
         using var server = Server(queue);
-        var body = MessagePayload("""{"from":"20100000003","id":"wamid.3","timestamp":"1700000000","type":"image","image":{"id":"media"}}""");
+        var body = EntryWithValue(ValueWithMetadata(
+            PhoneNumberId,
+            """{"from":"20100000003","id":"wamid.3","timestamp":"1700000000","type":"image","image":{"id":"media"}}"""));
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -141,9 +149,12 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue();
         using var server = Server(queue);
-        var body = """
-            {"entry":[{"changes":[{"value":{"statuses":[{"id":"sent","status":"sent"}],"messages":[{"from":"20100000004","id":"wamid.4","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
-            """;
+        var body = EntryWithValue(
+            "{\"statuses\":[{\"id\":\"sent\",\"status\":\"sent\"}],\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":\""
+            + PhoneNumberId
+            + "\"},\"messages\":["
+            + TextMessage("wamid.4", "20100000004", "hello")
+            + "]}");
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -157,9 +168,10 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue();
         using var server = Server(queue);
-        var body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100000005","id":"wamid.5a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100000005","id":"wamid.5b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
-            """;
+        var body = EntryWithValue(ValueWithMetadata(
+            PhoneNumberId,
+            "{\"from\":\"20100000005\",\"id\":\"wamid.5a\",\"timestamp\":\"1700000000\",\"type\":\"text\",\"text\":{\"body\":\"one\"}},"
+            + "{\"from\":\"20100000005\",\"id\":\"wamid.5b\",\"timestamp\":\"1700000001\",\"type\":\"text\",\"text\":{\"body\":\"two\"}}"));
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -167,6 +179,95 @@ public sealed class MetaWebhookContractTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(["wamid.5a", "wamid.5b"], queue.Envelopes.Select(envelope => envelope.ProviderMessageId));
         Assert.All(queue.Envelopes, envelope => Assert.Equal(body, envelope.RawBody));
+    }
+
+    [Fact]
+    public async Task A_message_addressed_to_the_configured_phone_number_is_enqueued_once()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = TextPayload("wamid.phone-match", "20100000020", "hello");
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var accepted = Assert.Single(queue.Envelopes);
+        Assert.Equal("wamid.phone-match", accepted.ProviderMessageId);
+    }
+
+    [Fact]
+    public async Task A_well_formed_callback_for_another_phone_number_is_acknowledged_without_inbox_work()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = EntryWithValue(
+            ValueWithMetadata(OtherPhoneNumberId, TextMessage("wamid.phone-other", "20100000021", "hello")));
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        // The callback is authentic and well formed, it simply belongs to another business number, so
+        // it is acknowledged without retries and without becoming this deployment's customer work.
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
+    }
+
+    [Theory]
+    [InlineData("{\"messages\":[%MESSAGE%]}")]
+    [InlineData("{\"metadata\":\"not-an-object\",\"messages\":[%MESSAGE%]}")]
+    [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\"},\"messages\":[%MESSAGE%]}")]
+    [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":\"  \"},\"messages\":[%MESSAGE%]}")]
+    public async Task A_message_collection_that_cannot_name_its_receiving_number_is_rejected_with_400(
+        string valueTemplate)
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = EntryWithValue(
+            valueTemplate.Replace("%MESSAGE%", TextMessage("wamid.phone-malformed", "20100000022", "hello"), StringComparison.Ordinal));
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        // The deployment cannot prove the messages are addressed to it, so the whole request is
+        // malformed and nothing of it is persisted.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
+    }
+
+    [Fact]
+    public async Task Only_the_changes_addressed_to_the_configured_phone_number_are_enqueued()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = EntryWithChanges(
+            ValueWithMetadata(OtherPhoneNumberId, TextMessage("wamid.phone-other", "20100000023", "hello")),
+            ValueWithMetadata(PhoneNumberId, TextMessage("wamid.phone-mine", "20100000024", "hello")));
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var accepted = Assert.Single(queue.Envelopes);
+        Assert.Equal("wamid.phone-mine", accepted.ProviderMessageId);
+    }
+
+    [Fact]
+    public async Task A_later_malformed_change_prevents_persistence_of_an_earlier_valid_one()
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = EntryWithChanges(
+            ValueWithMetadata(PhoneNumberId, TextMessage("wamid.phone-first", "20100000025", "hello")),
+            "{\"messages\":[" + TextMessage("wamid.phone-second", "20100000026", "hello") + "]}");
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        // The complete relevant structure is validated before anything is persisted, so a later
+        // malformed collection cannot leave the earlier valid one durably accepted.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
     }
 
     [Fact]
@@ -194,9 +295,10 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue();
         using var server = Server(queue);
-        var body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100000006","id":"wamid.6a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100000006","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
-            """;
+        var body = EntryWithValue(ValueWithMetadata(
+            PhoneNumberId,
+            "{\"from\":\"20100000006\",\"id\":\"wamid.6a\",\"timestamp\":\"1700000000\",\"type\":\"text\",\"text\":{\"body\":\"one\"}},"
+            + "{\"from\":\"20100000006\",\"timestamp\":\"1700000001\",\"type\":\"text\",\"text\":{\"body\":\"two\"}}"));
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -248,9 +350,10 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue();
         using var server = Server(queue);
-        var body = MessagePayload(
+        var body = EntryWithValue(ValueWithMetadata(
+            PhoneNumberId,
             "{\"from\":\"20100000008\",\"id\":\"wamid.8\",\"timestamp\":\"" + timestamp
-            + "\",\"type\":\"text\",\"text\":{\"body\":\"hello\"}}");
+            + "\",\"type\":\"text\",\"text\":{\"body\":\"hello\"}}"));
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -264,9 +367,10 @@ public sealed class MetaWebhookContractTests
     {
         var queue = new CapturingInboundQueue { FailOnAttempt = 2 };
         using var server = Server(queue);
-        var body = """
-            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100000007","id":"wamid.7a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100000007","id":"wamid.7b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
-            """;
+        var body = EntryWithValue(ValueWithMetadata(
+            PhoneNumberId,
+            "{\"from\":\"20100000007\",\"id\":\"wamid.7a\",\"timestamp\":\"1700000000\",\"type\":\"text\",\"text\":{\"body\":\"one\"}},"
+            + "{\"from\":\"20100000007\",\"id\":\"wamid.7b\",\"timestamp\":\"1700000001\",\"type\":\"text\",\"text\":{\"body\":\"two\"}}"));
         using var request = SignedRequest(body);
 
         var response = await server.CreateClient().SendAsync(request);
@@ -368,7 +472,7 @@ public sealed class MetaWebhookContractTests
                 services.AddSingleton(new WhatsAppOptions
                 {
                     ApiVersion = "v23.0",
-                    PhoneNumberId = "123",
+                    PhoneNumberId = PhoneNumberId,
                     VerifyToken = VerifyToken,
                     AppSecret = AppSecret,
                     AccessToken = "access-token",
@@ -407,14 +511,29 @@ public sealed class MetaWebhookContractTests
         return $"sha256={Convert.ToHexStringLower(hmac.ComputeHash(Encoding.UTF8.GetBytes(body)))}";
     }
 
-    private static string TextPayload(string id, string from, string text) =>
-        MessagePayload(
-            "{\"from\":\"" + from + "\",\"id\":\"" + id
-            + "\",\"timestamp\":\"1700000000\",\"type\":\"text\",\"text\":{\"body\":\""
-            + text + "\"}}");
+    private static string TextMessage(string id, string from, string text) =>
+        "{\"from\":\"" + from + "\",\"id\":\"" + id
+        + "\",\"timestamp\":\"1700000000\",\"type\":\"text\",\"text\":{\"body\":\""
+        + text + "\"}}";
 
-    private static string MessagePayload(string messageJson) =>
-        "{\"entry\":[{\"changes\":[{\"value\":{\"messages\":[" + messageJson + "]}}]}]}";
+    private static string TextPayload(string id, string from, string text) =>
+        EntryWithValue(ValueWithMetadata(PhoneNumberId, TextMessage(id, from, text)));
+
+    /// <summary>
+    /// One Meta value as the provider builds it: the receiving business number in <c>metadata</c>
+    /// alongside the messages it delivered.
+    /// </summary>
+    private static string ValueWithMetadata(string phoneNumberId, string messageJson) =>
+        "{\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":\""
+        + phoneNumberId + "\"},\"messages\":[" + messageJson + "]}";
+
+    private static string EntryWithValue(string valueJson) =>
+        "{\"entry\":[{\"changes\":[{\"value\":" + valueJson + "}]}]}";
+
+    private static string EntryWithChanges(params string[] valueJson) =>
+        "{\"entry\":[{\"changes\":["
+        + string.Join(",", valueJson.Select(value => "{\"value\":" + value + "}"))
+        + "]}]}";
 
     private sealed class CapturingInboundQueue : IInboundMessageQueue
     {
