@@ -95,13 +95,15 @@ Real secrets belong in user-secrets or environment variables, never in committed
 
 `WhatsApp:TimeoutSeconds` is constrained by the Outbox claim lease the worker runs under. The worker
 starts a local lease-safety deadline immediately before it claims a message, and that deadline bounds
-the claim itself, the Meta attempt, the accepted-delivery bookkeeping and the failure bookkeeping, so
-the worker stops acting under a claim before any other replica may recover it. Completion bookkeeping
-is bounded by one budget shared across its retries, and every durable queue command carries an explicit
-finite command timeout rather than inheriting the connection string's `Command Timeout`. `Host.Web`
-refuses to start when the configured timeout plus those enforced budgets cannot fit inside the lease;
-an over-long timeout is never silently capped. The worker budgets behind this invariant are internal
-policy, not user settings.
+the whole claim path, the Meta attempt, the accepted-delivery bookkeeping and the failure bookkeeping,
+so the worker stops acting under a claim before any other replica may recover it. Inside that sequence,
+every individual queue SQL statement carries an explicit finite command timeout rather than inheriting
+the connection string's `Command Timeout`, and the whole Outbox claim operation additionally has its own
+overall budget covering its connection, transaction, requeue, recovery, claim and commit steps.
+Completion bookkeeping is bounded by one budget shared across its retries. `Host.Web` refuses to start
+when the claim budget, the configured timeout, the completion bookkeeping and the lease-safety slack
+altogether cannot fit inside the claim lease; an over-long timeout is never silently capped. The worker
+budgets behind this invariant are internal policy, not user settings.
 
 ```bash
 dotnet user-secrets set "WhatsApp:ApiVersion" "<graph-version>" --project src/Host.Web

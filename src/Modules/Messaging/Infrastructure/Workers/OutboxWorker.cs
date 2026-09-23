@@ -96,7 +96,17 @@ public sealed class OutboxWorker : BackgroundService
             using var lease = new CancellationTokenSource();
             lease.CancelAfter(timing.LeaseSafetyDeadline(options.ClaimLeaseDuration));
 
-            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Token);
+            // The claim path is several sequential database operations (connection, transaction, the
+            // retry requeue, the expired-claim recovery, the claim statement and the commit), so it gets
+            // its own overall budget as well as the per-statement command timeout. This budget applies
+            // only here: once the claim returns, the send and its bookkeeping keep their own budgets.
+            using var claimBudget = new CancellationTokenSource();
+            claimBudget.CancelAfter(timing.ClaimBudget);
+
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                lease.Token,
+                claimBudget.Token);
 
             IReadOnlyList<ClaimedOutboxMessage> claimed;
 
@@ -106,11 +116,23 @@ public sealed class OutboxWorker : BackgroundService
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                // The claim itself consumed the lease-safe budget, so no send may begin under this
-                // poll's remaining time. The work stays durable and the next poll claims it fresh.
-                logger.LogWarning(
-                    "The Outbox poll stopped before claiming: the claim did not finish inside the "
-                    + "lease safety deadline. The work stays durable and unclaimed.");
+                // The claim ended before it produced work, so no send may begin and nothing is recorded
+                // against the message: it is still durable, unclaimed and untouched, and the next poll
+                // claims it fresh. Nothing here is a provider outcome.
+                if (claimBudget.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        "The Outbox poll stopped before claiming: the claim exceeded its configured "
+                        + "overall claim budget of {ClaimBudget}, so no send started. The work stays "
+                        + "durable and unclaimed.",
+                        timing.ClaimBudget);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "The Outbox poll stopped before claiming: the claim did not finish inside the "
+                        + "lease safety deadline. The work stays durable and unclaimed.");
+                }
 
                 break;
             }

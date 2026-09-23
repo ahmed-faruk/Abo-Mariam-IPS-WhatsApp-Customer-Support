@@ -94,6 +94,62 @@ public sealed class OutboxLeaseSafetyTests
     }
 
     [Fact]
+    public async Task A_claim_that_exceeds_its_own_budget_starts_no_send_while_the_lease_is_still_live()
+    {
+        // The lease guard is about a minute long and the claim budget is a third of a second, so only
+        // the claim budget can end this claim: the elapsed time below proves which one fired.
+        var timing = Timing(
+            bookkeeping: TimeSpan.FromSeconds(1),
+            slack: TimeSpan.FromSeconds(1),
+            claimBudget: TimeSpan.FromMilliseconds(300));
+        var store = new ScriptedStore { Claim = SampleClaim(), BlockClaim = true };
+        var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.never"));
+        await using var host = Host(store, sender, timing, lease: TimeSpan.FromMinutes(1));
+        var worker = host.Services.GetRequiredService<OutboxWorker>();
+        var stopwatch = Stopwatch.StartNew();
+
+        var processed = await worker.ProcessOnceAsync().WaitAsync(TestTimeout);
+
+        stopwatch.Stop();
+
+        Assert.Equal(0, processed);
+        Assert.True(store.ClaimTokenWasCancelled, "The claim budget did not reach the claim.");
+        Assert.Equal(0, sender.Sends);
+        Assert.Equal(0, store.CompletionCalls);
+        Assert.Equal(0, store.FailureCalls);
+
+        // The claim budget ended the claim, not the much longer lease guard.
+        Assert.True(
+            stopwatch.Elapsed >= TimeSpan.FromMilliseconds(300),
+            $"The claim did not consume its budget: {stopwatch.Elapsed}.");
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"The claim was not bounded by its own budget: {stopwatch.Elapsed}.");
+    }
+
+    [Fact]
+    public async Task A_claim_that_finishes_inside_its_budget_sends_and_completes_normally()
+    {
+        var timing = Timing(
+            bookkeeping: TimeSpan.FromSeconds(1),
+            slack: TimeSpan.FromSeconds(1),
+            claimBudget: TimeSpan.FromSeconds(5));
+        var store = new ScriptedStore { Claim = SampleClaim() };
+        var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.accepted"));
+        await using var host = Host(store, sender, timing, lease: TimeSpan.FromMinutes(5));
+        var worker = host.Services.GetRequiredService<OutboxWorker>();
+
+        var processed = await worker.ProcessOnceAsync().WaitAsync(TestTimeout);
+
+        // The claim budget is a pre-send bound only: it must not leak into the send or its bookkeeping.
+        Assert.Equal(1, processed);
+        Assert.Equal(1, sender.Sends);
+        Assert.Equal(1, store.CompletionCalls);
+        Assert.Equal(0, store.FailureCalls);
+        Assert.False(Assert.Single(store.CompletionTokens).IsCancellationRequested);
+    }
+
+    [Fact]
     public async Task Known_acceptance_bookkeeping_still_honours_the_lease_deadline_after_host_shutdown()
     {
         // The bookkeeping budget is deliberately longer than the lease guard, so only the lease
@@ -195,8 +251,12 @@ public sealed class OutboxLeaseSafetyTests
         Assert.Equal(5, command.CommandTimeout);
     }
 
-    private static MessagingTimingPolicy Timing(TimeSpan bookkeeping, TimeSpan slack) =>
+    private static MessagingTimingPolicy Timing(
+        TimeSpan bookkeeping,
+        TimeSpan slack,
+        TimeSpan? claimBudget = null) =>
         new(
+            ClaimBudget: claimBudget ?? TimeSpan.FromSeconds(30),
             CompletionBookkeepingBudget: bookkeeping,
             DatabaseCommandTimeout: TimeSpan.FromSeconds(1),
             LeaseSafetySlack: slack);

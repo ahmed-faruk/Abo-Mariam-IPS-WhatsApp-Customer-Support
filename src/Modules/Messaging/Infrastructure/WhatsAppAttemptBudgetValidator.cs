@@ -15,9 +15,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 /// This validator is the configuration sanity gate, not the safety mechanism. The hard mechanism is
 /// the worker's own lease guard, which is started before the claim and ends the attempt, the
 /// completion bookkeeping and the failure bookkeeping before the database lease can be recovered.
-/// The validator only ensures that a normal configured operation - one bounded queue command, the
-/// whole provider attempt, the shared completion-bookkeeping budget and the lease-safety slack -
-/// fits inside the lease, and the constants it uses are the ones the workers actually enforce.
+/// The validator only ensures that a normal configured operation - the bounded overall claim path, the
+/// whole provider attempt, the shared completion-bookkeeping budget and the lease-safety slack - fits
+/// inside the lease, and the constants it uses are the ones the workers actually enforce. The
+/// per-statement command timeout is a separate bound and is deliberately not the claim term.
 /// </remarks>
 internal sealed class WhatsAppAttemptBudgetValidator(
     IOptions<MessagingQueueOptions> queue,
@@ -39,8 +40,8 @@ internal sealed class WhatsAppAttemptBudgetValidator(
         return ValidateOptionsResult.Fail(
             $"The WhatsApp setting '{nameof(WhatsAppOptions.TimeoutSeconds)}' does not fit inside the "
             + $"messaging queue setting '{nameof(MessagingQueueOptions.ClaimLeaseDuration)}': the worker "
-            + $"needs a claim lease longer than {required} - one bounded queue command "
-            + $"({timing.DatabaseCommandTimeout}), the whole Meta attempt, the shared completion "
+            + $"needs a claim lease longer than {required} - the bounded overall claim path "
+            + $"({timing.ClaimBudget}), the whole Meta attempt, the shared completion "
             + $"bookkeeping budget ({timing.CompletionBookkeepingBudget}) and the lease-safety slack "
             + $"({timing.LeaseSafetySlack}) - but the configured lease is {lease}.");
     }
