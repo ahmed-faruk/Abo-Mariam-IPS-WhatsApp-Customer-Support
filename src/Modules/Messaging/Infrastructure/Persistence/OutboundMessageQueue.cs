@@ -16,7 +16,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 /// a turn that is processed twice because its Inbox message was retried reuses the reply it already
 /// stored instead of creating a second durable message.
 /// </remarks>
-internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutboundMessageQueue
+internal sealed class OutboundMessageQueue(MessagingDbContext dbContext, MessagingTimingPolicy timing)
+    : IOutboundMessageQueue
 {
     private const string InsertOutboxSql = """
         INSERT INTO messaging.outbox_message
@@ -42,7 +43,10 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         RequireText(correlationId, nameof(correlationId));
 
         await using var command = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, SelectByCorrelationSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            SelectByCorrelationSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "correlation_id", correlationId);
 
         return await ReadAcceptanceAsync(command, cancellationToken);
@@ -68,7 +72,10 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         // insert is left to PostgreSQL's own conflict handling, so two concurrent turns that share one
         // correlation cannot both create a row.
         await using var command = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, InsertOutboxSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            InsertOutboxSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "conversation_id", request.ConversationId);
         MessagingQueueCommands.Add(command, "customer_external_id", request.CustomerExternalId);
         MessagingQueueCommands.Add(command, "correlation_id", request.CorrelationId);
@@ -96,7 +103,10 @@ internal sealed class OutboundMessageQueue(MessagingDbContext dbContext) : IOutb
         // is already durable, so this turn must not create another one and must not rewrite the one that
         // was accepted with its own newer values.
         await using var existing = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, SelectByCorrelationSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            SelectByCorrelationSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(existing, "correlation_id", request.CorrelationId);
 
         return await ReadAcceptanceAsync(existing, cancellationToken)

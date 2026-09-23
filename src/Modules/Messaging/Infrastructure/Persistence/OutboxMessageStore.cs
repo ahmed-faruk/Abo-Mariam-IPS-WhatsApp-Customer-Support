@@ -14,8 +14,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 /// transactions can never take two messages of one partition, and a claim whose owner disappeared
 /// becomes claimable again once its lease expires.
 /// </summary>
-internal sealed class OutboxMessageStore(MessagingDbContext dbContext, MessagingQueueOptions options)
-    : IOutboxMessageStore
+internal sealed class OutboxMessageStore(
+    MessagingDbContext dbContext,
+    MessagingQueueOptions options,
+    MessagingTimingPolicy timing) : IOutboxMessageStore
 {
     /// <summary>A Failed message whose retry is due re-enters Pending, keeping the claim predicate documented.</summary>
     private const string RequeueDueRetriesSql = """
@@ -28,10 +30,19 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
     /// Work abandoned by a worker that crashed, was cancelled or lost its database connection. The
     /// lease is PostgreSQL-owned: only the clock releases it, and the recovery is bounded exactly
     /// like a claim, so one poll never rewrites an unbounded number of rows.
+    /// A recovered attempt is uncertain either way: the abandoned owner may already have left the
+    /// transport, so the recovery is recorded as an unknown provider outcome, never as a refusal.
     /// </summary>
     private const string RecoverExpiredClaimsSql = """
         UPDATE messaging.outbox_message AS m
-        SET delivery_status = 'Pending',
+        SET delivery_status = CASE
+                WHEN m.attempts >= m.max_attempts THEN 'DeadLettered'
+                ELSE 'Pending'
+            END,
+            last_error = CASE
+                WHEN m.attempts >= m.max_attempts THEN @exhausted_error
+                ELSE @recovered_error
+            END,
             claim_token = NULL,
             claim_expires_at = NULL
         WHERE m.id IN (
@@ -135,9 +146,9 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
 
     private const string FailSql = """
         UPDATE messaging.outbox_message
-        SET delivery_status = CASE WHEN attempts >= max_attempts THEN 'DeadLettered' ELSE 'Failed' END,
+        SET delivery_status = CASE WHEN @terminal OR attempts >= max_attempts THEN 'DeadLettered' ELSE 'Failed' END,
             last_error = @last_error,
-            run_after = CASE WHEN attempts >= max_attempts THEN run_after ELSE now() + @retry_delay END,
+            run_after = CASE WHEN @terminal OR attempts >= max_attempts THEN run_after ELSE now() + @retry_delay END,
             claim_token = NULL,
             claim_expires_at = NULL
         WHERE id = @outbox_message_id
@@ -153,7 +164,7 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
     /// <summary>
     /// The stable delivery key of one logical Outbox message. It is derived from the durable Outbox
     /// identity, so a retry and a later reclaim of the same message always present the same key to
-    /// the transport and the provider can reconcile instead of delivering twice.
+    /// the transport for local logs and correlation. It is not a provider idempotency guarantee.
     /// </summary>
     private static string DeliveryKey(long outboxMessageId) =>
         string.Create(CultureInfo.InvariantCulture, $"outbox:{outboxMessageId}");
@@ -175,12 +186,16 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         var connection = await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken);
         var dbTransaction = transaction.GetDbTransaction();
 
-        await ExecuteAsync(connection, dbTransaction, RequeueDueRetriesSql, cancellationToken);
+        await ExecuteAsync(connection, dbTransaction, RequeueDueRetriesSql, timing.DatabaseCommandTimeout, cancellationToken);
         await RecoverExpiredClaimsAsync(connection, dbTransaction, batchSize, cancellationToken);
 
         var claimed = new List<ClaimedOutboxMessage>();
 
-        await using (var command = MessagingQueueCommands.Create(connection, dbTransaction, ClaimSql))
+        await using (var command = MessagingQueueCommands.Create(
+            connection,
+            dbTransaction,
+            ClaimSql,
+            timing.DatabaseCommandTimeout))
         {
             MessagingQueueCommands.Add(command, "batch_size", batchSize);
             MessagingQueueCommands.Add(command, "claim_token", claimToken);
@@ -222,7 +237,11 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
 
         var connection = await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken);
 
-        await using (var command = MessagingQueueCommands.Create(connection, null, CompleteSql))
+        await using (var command = MessagingQueueCommands.Create(
+            connection,
+            null,
+            CompleteSql,
+            timing.DatabaseCommandTimeout))
         {
             MessagingQueueCommands.Add(command, "outbox_message_id", outboxMessageId);
             MessagingQueueCommands.Add(command, "claim_token", claimToken);
@@ -237,7 +256,11 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         // The update matched nothing, so either this accepted delivery is already recorded - the
         // same successful provider result, which makes the repeat a no-op - or the lease expired and
         // another owner holds the claim, which this stale owner must not overwrite.
-        await using var read = MessagingQueueCommands.Create(connection, null, CompletedDeliverySql);
+        await using var read = MessagingQueueCommands.Create(
+            connection,
+            null,
+            CompletedDeliverySql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(read, "message_id", outboxMessageId);
 
         await using var reader = await read.ExecuteReaderAsync(cancellationToken);
@@ -265,16 +288,32 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         long outboxMessageId,
         Guid claimToken,
         string error,
+        bool terminal = false,
+        TimeSpan? retryDelay = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
 
+        // The durable schedule is bounded here, not only in the transport: a provider hint that asks
+        // for a far-away retry is clamped to the queue policy, so no single hint can park the oldest
+        // message of a partition decades into the future.
+        var delay = retryDelay ?? options.OutboxRetryDelay;
+
+        if (delay > options.OutboxMaxRetryDelay)
+        {
+            delay = options.OutboxMaxRetryDelay;
+        }
+
         await using var command = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, FailSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            FailSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "outbox_message_id", outboxMessageId);
         MessagingQueueCommands.Add(command, "claim_token", claimToken);
         MessagingQueueCommands.Add(command, "last_error", error);
-        MessagingQueueCommands.Add(command, "retry_delay", options.OutboxRetryDelay);
+        MessagingQueueCommands.Add(command, "terminal", terminal);
+        MessagingQueueCommands.Add(command, "retry_delay", delay);
 
         var status = await command.ExecuteScalarAsync(cancellationToken) as string
             ?? throw await MessagingQueueCommands.LostClaimAsync(
@@ -282,6 +321,7 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
                 StatusSql,
                 "Outbox message",
                 outboxMessageId,
+                timing.DatabaseCommandTimeout,
                 cancellationToken);
 
         return string.Equals(status, OutboxDeliveryStatuses.DeadLettered, StringComparison.Ordinal)
@@ -289,14 +329,20 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
             : QueueFailureOutcome.RetryScheduled;
     }
 
-    private static async Task RecoverExpiredClaimsAsync(
+    private async Task RecoverExpiredClaimsAsync(
         DbConnection connection,
         DbTransaction transaction,
         int batchSize,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, RecoverExpiredClaimsSql);
+        await using var command = MessagingQueueCommands.Create(
+            connection,
+            transaction,
+            RecoverExpiredClaimsSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "batch_size", batchSize);
+        MessagingQueueCommands.Add(command, "recovered_error", MessagingDiagnostics.ExpiredClaimRecovered);
+        MessagingQueueCommands.Add(command, "exhausted_error", MessagingDiagnostics.ExpiredClaimExhausted);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -305,9 +351,10 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         DbConnection connection,
         DbTransaction transaction,
         string sql,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, sql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, sql, commandTimeout);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

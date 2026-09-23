@@ -9,7 +9,10 @@ public sealed class MessagingQueueOptions
     /// <summary>Messages one Inbox claim may take. The claim is always bounded by this value.</summary>
     public int InboxBatchSize { get; set; } = 20;
 
-    /// <summary>Messages one Outbox claim may take. The claim is always bounded by this value.</summary>
+    /// <summary>
+    /// Messages one Outbox poll may send. The worker claims each one immediately before its own send,
+    /// so a poll never holds more than one live lease and this value is the per-poll send budget.
+    /// </summary>
     public int OutboxBatchSize { get; set; } = 20;
 
     /// <summary>Attempts an Inbox message gets before it is DeadLettered.</summary>
@@ -20,6 +23,13 @@ public sealed class MessagingQueueOptions
 
     /// <summary>Delay before a failed Outbox message becomes claimable again.</summary>
     public TimeSpan OutboxRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The longest retry delay any Outbox failure may schedule, including a provider retry hint. The
+    /// durable retry schedule stays bounded, so one provider hint can never park the oldest message of
+    /// a partition far into the future.
+    /// </summary>
+    public TimeSpan OutboxMaxRetryDelay { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
     /// How long a claim owns its message. A worker that crashes, is cancelled or loses the database

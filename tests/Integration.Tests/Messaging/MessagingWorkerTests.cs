@@ -53,7 +53,7 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
         Assert.Equal(1, await worker.ProcessOnceAsync());
 
         Assert.Equal("Failed", await InboxStatusAsync(id));
-        Assert.Equal("orchestration exploded", await Catalog.ScalarAsync(
+        Assert.Equal("Processing failed: InvalidOperationException", await Catalog.ScalarAsync(
             $"SELECT last_error FROM messaging.inbox_message WHERE id = {id}"));
         Assert.Equal("1", await Catalog.ScalarAsync(
             $"SELECT attempts FROM messaging.inbox_message WHERE id = {id}"));
@@ -133,10 +133,69 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
         Assert.Equal(1, await worker.ProcessOnceAsync());
 
         Assert.Equal("Failed", await OutboxStatusAsync(id));
-        Assert.Equal("Meta is unreachable", await Catalog.ScalarAsync(
+        Assert.Equal("Unknown provider outcome: HttpRequestException", await Catalog.ScalarAsync(
             $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
         Assert.Equal("1", await Catalog.ScalarAsync(
             $"SELECT count(*) FROM messaging.outbox_message WHERE id = {id} AND sent_at IS NULL"));
+    }
+
+    [Fact]
+    public async Task An_unbounded_sender_exception_never_reaches_the_stored_diagnostic()
+    {
+        var id = await EnqueueOutboundAsync();
+        var uncontrolledText = "customer 20100000001 said: " + new string('y', 100_000);
+
+        await using var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(
+            new StubOutboundSender { Failure = new HttpRequestException(uncontrolledText) }));
+        await using var scope = host.CreateScope();
+        var worker = scope.ServiceProvider.GetRequiredService<OutboxWorker>();
+
+        Assert.Equal(1, await worker.ProcessOnceAsync());
+
+        var stored = await Catalog.ScalarAsync(
+            $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}");
+
+        Assert.Equal("Unknown provider outcome: HttpRequestException", stored);
+        Assert.DoesNotContain("20100000001", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("yyyy", stored, StringComparison.Ordinal);
+        Assert.True(stored.Length < 100, $"The stored diagnostic was {stored.Length} characters.");
+    }
+
+    [Fact]
+    public async Task The_outbox_worker_dead_letters_a_permanent_failure_without_spending_remaining_attempts()
+    {
+        var id = await EnqueueOutboundAsync();
+
+        await using var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(
+            new StubOutboundSender { Result = _ => OutboundSendResult.PermanentFailure("Meta rejected unchanged request") }));
+        await using var scope = host.CreateScope();
+        var worker = scope.ServiceProvider.GetRequiredService<OutboxWorker>();
+
+        Assert.Equal(1, await worker.ProcessOnceAsync());
+
+        Assert.Equal("DeadLettered", await OutboxStatusAsync(id));
+        Assert.Equal("Meta rejected unchanged request", await Catalog.ScalarAsync(
+            $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
+        Assert.Equal("1", await Catalog.ScalarAsync(
+            $"SELECT attempts FROM messaging.outbox_message WHERE id = {id}"));
+        Assert.Equal(0, await worker.ProcessOnceAsync());
+    }
+
+    [Fact]
+    public async Task The_outbox_worker_records_unknown_outcome_truthfully()
+    {
+        var id = await EnqueueOutboundAsync();
+
+        await using var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(
+            new StubOutboundSender { Result = _ => OutboundSendResult.Unknown("Unknown provider outcome: timeout") }));
+        await using var scope = host.CreateScope();
+        var worker = scope.ServiceProvider.GetRequiredService<OutboxWorker>();
+
+        Assert.Equal(1, await worker.ProcessOnceAsync());
+
+        Assert.Equal("Failed", await OutboxStatusAsync(id));
+        Assert.Equal("Unknown provider outcome: timeout", await Catalog.ScalarAsync(
+            $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
     }
 
     [Fact]
@@ -168,6 +227,47 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
         Assert.Equal("0", await Catalog.ScalarAsync($"SELECT attempts FROM messaging.outbox_message WHERE id = {outboxId}"));
     }
 
+    [Fact]
+    public async Task The_outbox_worker_never_sends_on_a_claim_another_worker_could_already_reclaim()
+    {
+        long firstId;
+        long secondId;
+
+        await using (var host = MessagingHost.Start(ConnectionString))
+        await using (var scope = host.CreateScope())
+        {
+            var outbound = scope.ServiceProvider.GetRequiredService<IOutboundMessageQueue>();
+
+            // One reply per partition, so a single claim batch would take both of them.
+            firstId = (await outbound.EnqueueAsync(MessagingSamples.Outbound(
+                conversationId: 41,
+                customerExternalId: "20100000801",
+                correlationId: "corr-lease-a"))).OutboxMessageId;
+            secondId = (await outbound.EnqueueAsync(MessagingSamples.Outbound(
+                conversationId: 42,
+                customerExternalId: "20100000802",
+                correlationId: "corr-lease-b"))).OutboxMessageId;
+        }
+
+        var sender = new LeaseObservingSender(Catalog);
+
+        await using (var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(sender)))
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Equal(2, await scope.ServiceProvider.GetRequiredService<OutboxWorker>().ProcessOnceAsync());
+        }
+
+        // The first send outlives the lease of every other reply the poll had claimed. A reply that
+        // had been claimed before its send would therefore leave the transport on a lease another
+        // worker was already allowed to reclaim, which is exactly the duplicate send this guards.
+        Assert.True(
+            sender.EverySendHeldALiveLease,
+            "An Outbox send began on a claim whose lease another worker could already reclaim.");
+        Assert.Equal([firstId, secondId], sender.SentIds.Order());
+        Assert.Equal("Sent", await OutboxStatusAsync(firstId));
+        Assert.Equal("Sent", await OutboxStatusAsync(secondId));
+    }
+
     private async Task<long> EnqueueInboundAsync(string providerMessageId, string customerExternalId)
     {
         await using var host = MessagingHost.Start(ConnectionString);
@@ -192,4 +292,34 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
 
     private MessagingHost StartHost(Action<IServiceCollection> configureServices) =>
         MessagingHost.Start(ConnectionString, configure: null, configureServices);
+
+    /// <summary>
+    /// A sender that behaves like a real Meta round trip. Every send observes the durable claim it was
+    /// handed, and a send that outlives the lease of the rest of the poll ends those leases the way
+    /// the clock would.
+    /// </summary>
+    private sealed class LeaseObservingSender(DatabaseCatalogReader catalog) : IOutboundMessageSender
+    {
+        public List<long> SentIds { get; } = [];
+
+        public bool EverySendHeldALiveLease { get; private set; } = true;
+
+        public async Task<OutboundSendResult> SendAsync(
+            ClaimedOutboxMessage message,
+            CancellationToken cancellationToken = default)
+        {
+            var lease = await catalog.ScalarAsync(
+                "SELECT (delivery_status = 'Claimed' AND claim_expires_at > now())::text "
+                + $"FROM messaging.outbox_message WHERE id = {message.Id}");
+
+            EverySendHeldALiveLease &= lease == "true";
+            SentIds.Add(message.Id);
+
+            await catalog.ExecuteAsync(
+                "UPDATE messaging.outbox_message SET claim_expires_at = now() - interval '1 second' "
+                + $"WHERE delivery_status = 'Claimed' AND id <> {message.Id}");
+
+            return OutboundSendResult.Sent($"wamid.sent.{message.Id}");
+        }
+    }
 }

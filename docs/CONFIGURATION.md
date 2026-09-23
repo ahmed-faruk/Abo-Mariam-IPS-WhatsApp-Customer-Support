@@ -73,3 +73,43 @@ The frozen request shape is not configurable: structured JSON schema output, `st
 `think: false`, one corrective retry maximum for a reply that is invalid, unparsable or schema-invalid,
 no schema retry for a transport failure, and prompt `nlu-system-prompt-v3`. Local Ollama needs no
 credentials, and it must never be exposed publicly; the demo runs Ollama on `127.0.0.1` only.
+
+## WhatsApp Cloud API
+
+The Messaging module reads Meta WhatsApp settings from the `WhatsApp` section.
+
+| Configuration key | Environment variable | Type | Secret |
+|---|---|---|---|
+| `WhatsApp:ApiVersion` | `WhatsApp__ApiVersion` | Graph API version, for example `v23.0` | No |
+| `WhatsApp:PhoneNumberId` | `WhatsApp__PhoneNumberId` | WhatsApp phone number id | No |
+| `WhatsApp:WabaId` | `WhatsApp__WabaId` | WhatsApp Business Account id | No |
+| `WhatsApp:VerifyToken` | `WhatsApp__VerifyToken` | webhook verification token | Yes |
+| `WhatsApp:AppSecret` | `WhatsApp__AppSecret` | app secret used for `X-Hub-Signature-256` | Yes |
+| `WhatsApp:AccessToken` | `WhatsApp__AccessToken` | Graph API bearer token | Yes |
+| `WhatsApp:TimeoutSeconds` | `WhatsApp__TimeoutSeconds` | outbound HTTP timeout seconds, default `20` | No |
+| `WhatsApp:MaxWebhookBodyBytes` | `WhatsApp__MaxWebhookBodyBytes` | webhook POST body limit, default `3145728` | No |
+| `WhatsApp:WebhookPermitLimit` | `WhatsApp__WebhookPermitLimit` | built-in webhook rate-limit permits per window, default `120` | No |
+| `WhatsApp:WebhookWindowSeconds` | `WhatsApp__WebhookWindowSeconds` | rate-limit window seconds, default `60` | No |
+
+Real secrets belong in user-secrets or environment variables, never in committed configuration.
+
+`WhatsApp:TimeoutSeconds` is constrained by the Outbox claim lease the worker runs under. The worker
+starts a local lease-safety deadline immediately before it claims a message, and that deadline bounds
+the whole claim path, the Meta attempt, the accepted-delivery bookkeeping and the failure bookkeeping,
+so the worker stops acting under a claim before any other replica may recover it. Inside that sequence,
+every individual queue SQL statement carries an explicit finite command timeout rather than inheriting
+the connection string's `Command Timeout`, and the whole Outbox claim operation additionally has its own
+overall budget covering its connection, transaction, requeue, recovery, claim and commit steps.
+Completion bookkeeping is bounded by one budget shared across its retries. `Host.Web` refuses to start
+when the claim budget, the configured timeout, the completion bookkeeping and the lease-safety slack
+altogether cannot fit inside the claim lease; an over-long timeout is never silently capped. The worker
+budgets behind this invariant are internal policy, not user settings.
+
+```bash
+dotnet user-secrets set "WhatsApp:ApiVersion" "<graph-version>" --project src/Host.Web
+dotnet user-secrets set "WhatsApp:PhoneNumberId" "<phone-number-id>" --project src/Host.Web
+dotnet user-secrets set "WhatsApp:WabaId" "<waba-id>" --project src/Host.Web
+dotnet user-secrets set "WhatsApp:VerifyToken" "<verify-token>" --project src/Host.Web
+dotnet user-secrets set "WhatsApp:AppSecret" "<app-secret>" --project src/Host.Web
+dotnet user-secrets set "WhatsApp:AccessToken" "<access-token>" --project src/Host.Web
+```

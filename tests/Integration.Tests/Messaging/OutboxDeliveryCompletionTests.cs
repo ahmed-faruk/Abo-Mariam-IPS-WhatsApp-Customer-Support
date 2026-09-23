@@ -7,9 +7,9 @@ namespace WhatsAppMonitorAssistant.Integration.Tests.Messaging;
 
 /// <summary>
 /// Finding 3: a send the provider accepted is never reported as a transport failure. A completion
-/// that fails after a successful send is repaired by retrying the bookkeeping, and when the lease has
-/// to recover the message the transport is asked for the same logical delivery through its stable
-/// delivery key instead of delivering the reply a second time.
+/// that fails after a successful send is repaired by retrying the bookkeeping without another HTTP
+/// send. If the claim later expires without that provider id being recorded, a later retry may send
+/// again because Meta exposes no documented provider-side idempotency key for this operation.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postgres)
@@ -20,9 +20,8 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
     {
         await InstallCompletionFaultAsync(failures: 1);
 
-        var sender = new DeliveryLedgerSender();
+        var sender = new CountingOutboundSender();
         var id = await EnqueueAsync();
-        var deliveryKey = $"outbox:{id}";
 
         await using var host = StartHost(sender);
         await using var scope = host.CreateScope();
@@ -30,14 +29,10 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
 
         Assert.Equal(1, await worker.ProcessOnceAsync());
 
-        // The provider accepted one logical delivery, and the worker recorded it by retrying the
-        // completion of that delivery rather than by sending the reply again.
-        Assert.Equal(new[] { deliveryKey }, sender.DeliveryKeys);
-        Assert.Equal(1, sender.FreshDeliveries);
-        Assert.Equal(0, sender.Reconciliations);
+        Assert.Equal(1, sender.Sends);
 
         Assert.Equal("Sent", await OutboxStatusAsync(id));
-        Assert.Equal($"wamid.{deliveryKey}", await Catalog.ScalarAsync(
+        Assert.Equal("wamid.sent.1", await Catalog.ScalarAsync(
             $"SELECT provider_message_id FROM messaging.outbox_message WHERE id = {id}"));
         Assert.Equal("1", await Catalog.ScalarAsync(
             $"SELECT count(*) FROM messaging.outbox_message WHERE id = {id} AND sent_at IS NOT NULL"));
@@ -51,15 +46,14 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
     }
 
     [Fact]
-    public async Task An_accepted_delivery_whose_bookkeeping_failed_is_reconciled_after_the_lease_recovers_it()
+    public async Task An_accepted_delivery_whose_bookkeeping_failed_may_send_again_after_the_lease_recovers()
     {
         // The bookkeeping keeps failing, exactly like an outage that outlives the worker's bounded
         // completion retries.
         await InstallCompletionFaultAsync(failures: 1000);
 
-        var sender = new DeliveryLedgerSender();
+        var sender = new CountingOutboundSender();
         var id = await EnqueueAsync();
-        var deliveryKey = $"outbox:{id}";
 
         await using var host = StartHost(sender);
         await using var scope = host.CreateScope();
@@ -69,8 +63,7 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
 
         // The provider accepted the delivery, so the attempt was never reported as a failed send:
         // the message stays claimed with no error until its lease is recovered.
-        Assert.Equal(1, sender.FreshDeliveries);
-        Assert.Equal(0, sender.Reconciliations);
+        Assert.Equal(1, sender.Sends);
         Assert.Equal("Claimed", await OutboxStatusAsync(id));
         Assert.Equal(string.Empty, await Catalog.ScalarAsync(
             $"SELECT coalesce(provider_message_id, '') FROM messaging.outbox_message WHERE id = {id}"));
@@ -86,21 +79,19 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
         // An immediate poll finds no work, so the reply is not delivered again while the first
         // accepted delivery is still owned.
         Assert.Equal(0, await worker.ProcessOnceAsync());
-        Assert.Equal(1, sender.FreshDeliveries);
-        Assert.Equal(0, sender.Reconciliations);
+        Assert.Equal(1, sender.Sends);
 
-        // The bookkeeping is healthy again and the lease expires, so the recovered claim presents the
-        // same delivery key: the transport reconciles instead of accepting a second delivery.
+        // The bookkeeping is healthy again and the lease expires. The retry is truthful but no longer
+        // has durable proof of the provider id that Meta returned earlier, so it may duplicate outside
+        // the application. The application records the provider id it now knows.
         await HealCompletionFaultAsync();
         await ExpireClaimAsync(QueueKind.Outbox, id);
 
         Assert.Equal(1, await worker.ProcessOnceAsync());
 
-        Assert.Equal(new[] { deliveryKey }, sender.DeliveryKeys);
-        Assert.Equal(1, sender.FreshDeliveries);
-        Assert.Equal(1, sender.Reconciliations);
+        Assert.Equal(2, sender.Sends);
         Assert.Equal("Sent", await OutboxStatusAsync(id));
-        Assert.Equal(sender.AcceptedProviderMessageId(deliveryKey), await Catalog.ScalarAsync(
+        Assert.Equal("wamid.sent.2", await Catalog.ScalarAsync(
             $"SELECT provider_message_id FROM messaging.outbox_message WHERE id = {id}"));
         Assert.Equal("2", await Catalog.ScalarAsync(
             $"SELECT attempts FROM messaging.outbox_message WHERE id = {id}"));
@@ -159,4 +150,18 @@ public sealed class OutboxDeliveryCompletionTests(PostgresContainerFixture postg
 
     private Task HealCompletionFaultAsync() => Catalog.ExecuteAsync(
         "DROP TRIGGER trg_test_fail_sent_updates ON messaging.outbox_message");
+}
+
+internal sealed class CountingOutboundSender : IOutboundMessageSender
+{
+    public int Sends { get; private set; }
+
+    public Task<OutboundSendResult> SendAsync(
+        ClaimedOutboxMessage message,
+        CancellationToken cancellationToken = default)
+    {
+        Sends++;
+
+        return Task.FromResult(OutboundSendResult.Sent($"wamid.sent.{Sends}"));
+    }
 }

@@ -818,12 +818,27 @@ Conversations.ProcessInboundTurn
 `window_expires_at` updates only on inbound customer messages, and is
 `provider_timestamp + 24 hours`.
 
-Before every reactive free-form send, ensure the window is still open: it is open only while the expiry
-is strictly in the future, so the expiry instant itself is closed.
+Before every new reactive free-form send, ensure the window is still open: it is open only while the
+expiry is strictly in the future, so the expiry instant itself is closed. This is a gate on creating a
+new durable Outbox reply, so Conversations evaluates it against the current clock immediately before it
+asks Messaging to accept that new reply, and no free-form reply is enqueued while the window is closed.
 
-Lean demo contains no proactive template workflow. If closed:
+Once an immutable Outbox reply has already been durably accepted while it was authorized, its later
+delivery or retry is not a new free-form send and is not re-gated against a window that closed since.
+The accepted row is what the customer's turn produced, so a retry of its inbound correlation reconciles
+that same durable reply instead of rendering another one, and the transport retry of the accepted row
+keeps its place in the durable Outbox exactly as any other durable intent does.
 
-- do not send free-form;
+That transport retry is still bounded: the stored `max_attempts` of section 6.5 ends it in the
+`DeadLettered` status, and the Outbox queue policy clamps every scheduled retry delay to its
+`OutboxMaxRetryDelay` ceiling, so a delivery that keeps failing dead-letters instead of retrying
+forever. A free-form message the provider itself refuses as no longer allowed outside the window - the
+re-engagement error the adapter classifies as permanent, currently 131047 - terminates on that attempt
+instead of being retried.
+
+Lean demo contains no proactive template workflow. If closed when a new reply would be created:
+
+- do not create or enqueue a new free-form reply;
 - flag conversation;
 - wait for another inbound customer message.
 

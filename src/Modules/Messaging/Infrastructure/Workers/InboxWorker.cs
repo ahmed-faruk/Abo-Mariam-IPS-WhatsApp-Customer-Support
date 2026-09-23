@@ -141,7 +141,11 @@ public sealed class InboxWorker(
 
         try
         {
-            outcome = await store.FailAsync(message.Id, message.ClaimToken, failure.Message, cancellationToken);
+            outcome = await store.FailAsync(
+                message.Id,
+                message.ClaimToken,
+                MessagingDiagnostics.UnexpectedInboundFailure(failure),
+                cancellationToken);
         }
         catch (ClaimOwnershipLostException exception)
         {

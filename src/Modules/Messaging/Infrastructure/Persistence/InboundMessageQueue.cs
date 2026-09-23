@@ -11,7 +11,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 /// The durable inbound acceptance step from docs/TECHNICAL.md section 14: envelope and Inbox row
 /// in one transaction, both deduplicated, committed before the caller answers the provider.
 /// </summary>
-internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInboundMessageQueue
+internal sealed class InboundMessageQueue(MessagingDbContext dbContext, MessagingTimingPolicy timing)
+    : IInboundMessageQueue
 {
     private const string InsertEnvelopeSql = """
         INSERT INTO messaging.webhook_envelope (envelope_hash, raw_body)
@@ -56,17 +57,39 @@ internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInbou
         var connection = await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken);
         var dbTransaction = transaction.GetDbTransaction();
 
-        var envelopeId = await InsertEnvelopeAsync(connection, dbTransaction, envelopeHash, envelope.RawBody, cancellationToken)
-            ?? await SelectEnvelopeIdAsync(connection, dbTransaction, envelopeHash, cancellationToken);
+        var envelopeId = await InsertEnvelopeAsync(
+                connection,
+                dbTransaction,
+                envelopeHash,
+                envelope.RawBody,
+                timing.DatabaseCommandTimeout,
+                cancellationToken)
+            ?? await SelectEnvelopeIdAsync(
+                connection,
+                dbTransaction,
+                envelopeHash,
+                timing.DatabaseCommandTimeout,
+                cancellationToken);
 
-        var inboxMessageId = await InsertInboxAsync(connection, dbTransaction, envelopeId, envelope, cancellationToken);
+        var inboxMessageId = await InsertInboxAsync(
+            connection,
+            dbTransaction,
+            envelopeId,
+            envelope,
+            timing.DatabaseCommandTimeout,
+            cancellationToken);
 
         if (inboxMessageId is null)
         {
             // A duplicate provider message id adds nothing at all, so the envelope inserted by
             // this attempt is rolled back with it and the stored Inbox message is returned.
             var storedInboxMessageId =
-                await SelectInboxIdAsync(connection, dbTransaction, envelope.ProviderMessageId, cancellationToken);
+                await SelectInboxIdAsync(
+                    connection,
+                    dbTransaction,
+                    envelope.ProviderMessageId,
+                    timing.DatabaseCommandTimeout,
+                    cancellationToken);
 
             await transaction.RollbackAsync(cancellationToken);
 
@@ -83,9 +106,10 @@ internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInbou
         DbTransaction transaction,
         byte[] envelopeHash,
         string rawBody,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, InsertEnvelopeSql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, InsertEnvelopeSql, commandTimeout);
         MessagingQueueCommands.Add(command, "envelope_hash", envelopeHash);
         MessagingQueueCommands.Add(command, "raw_body", rawBody);
 
@@ -96,9 +120,10 @@ internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInbou
         DbConnection connection,
         DbTransaction transaction,
         byte[] envelopeHash,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, SelectEnvelopeSql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, SelectEnvelopeSql, commandTimeout);
         MessagingQueueCommands.Add(command, "envelope_hash", envelopeHash);
 
         var value = await command.ExecuteScalarAsync(cancellationToken);
@@ -113,9 +138,10 @@ internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInbou
         DbTransaction transaction,
         long envelopeId,
         InboundMessageEnvelope envelope,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, InsertInboxSql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, InsertInboxSql, commandTimeout);
         MessagingQueueCommands.Add(command, "envelope_id", envelopeId);
         MessagingQueueCommands.Add(command, "provider_message_id", envelope.ProviderMessageId);
         MessagingQueueCommands.Add(command, "customer_external_id", envelope.CustomerExternalId);
@@ -134,9 +160,10 @@ internal sealed class InboundMessageQueue(MessagingDbContext dbContext) : IInbou
         DbConnection connection,
         DbTransaction transaction,
         string providerMessageId,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, SelectInboxSql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, SelectInboxSql, commandTimeout);
         MessagingQueueCommands.Add(command, "provider_message_id", providerMessageId);
 
         var value = await command.ExecuteScalarAsync(cancellationToken);

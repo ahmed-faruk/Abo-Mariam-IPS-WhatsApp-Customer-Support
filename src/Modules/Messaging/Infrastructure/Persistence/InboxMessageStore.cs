@@ -13,8 +13,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 /// concurrent claim transactions can never take two messages of one partition, and a claim whose
 /// owner disappeared becomes claimable again once its lease expires.
 /// </summary>
-internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQueueOptions options)
-    : IInboxMessageStore
+internal sealed class InboxMessageStore(
+    MessagingDbContext dbContext,
+    MessagingQueueOptions options,
+    MessagingTimingPolicy timing) : IInboxMessageStore
 {
     /// <summary>
     /// A Failed message whose retry is due re-enters Pending, so the documented claim predicate
@@ -162,12 +164,16 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         var connection = await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken);
         var dbTransaction = transaction.GetDbTransaction();
 
-        await ExecuteAsync(connection, dbTransaction, RequeueDueRetriesSql, cancellationToken);
+        await ExecuteAsync(connection, dbTransaction, RequeueDueRetriesSql, timing.DatabaseCommandTimeout, cancellationToken);
         await RecoverExpiredClaimsAsync(connection, dbTransaction, batchSize, cancellationToken);
 
         var claimed = new List<ClaimedInboxMessage>();
 
-        await using (var command = MessagingQueueCommands.Create(connection, dbTransaction, ClaimSql))
+        await using (var command = MessagingQueueCommands.Create(
+            connection,
+            dbTransaction,
+            ClaimSql,
+            timing.DatabaseCommandTimeout))
         {
             MessagingQueueCommands.Add(command, "batch_size", batchSize);
             MessagingQueueCommands.Add(command, "claim_token", claimToken);
@@ -202,7 +208,10 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         CancellationToken cancellationToken = default)
     {
         await using var command = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, CompleteSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            CompleteSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "inbox_message_id", inboxMessageId);
         MessagingQueueCommands.Add(command, "claim_token", claimToken);
 
@@ -213,6 +222,7 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
                 StatusSql,
                 "Inbox message",
                 inboxMessageId,
+                timing.DatabaseCommandTimeout,
                 cancellationToken);
         }
     }
@@ -226,7 +236,10 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
 
         await using var command = MessagingQueueCommands.Create(
-            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken), null, FailSql);
+            await MessagingQueueCommands.OpenAsync(dbContext, cancellationToken),
+            null,
+            FailSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "inbox_message_id", inboxMessageId);
         MessagingQueueCommands.Add(command, "claim_token", claimToken);
         MessagingQueueCommands.Add(command, "last_error", error);
@@ -239,6 +252,7 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
                 StatusSql,
                 "Inbox message",
                 inboxMessageId,
+                timing.DatabaseCommandTimeout,
                 cancellationToken);
 
         return string.Equals(status, InboxProcessingStatuses.DeadLettered, StringComparison.Ordinal)
@@ -246,13 +260,17 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
             : QueueFailureOutcome.RetryScheduled;
     }
 
-    private static async Task RecoverExpiredClaimsAsync(
+    private async Task RecoverExpiredClaimsAsync(
         DbConnection connection,
         DbTransaction transaction,
         int batchSize,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, RecoverExpiredClaimsSql);
+        await using var command = MessagingQueueCommands.Create(
+            connection,
+            transaction,
+            RecoverExpiredClaimsSql,
+            timing.DatabaseCommandTimeout);
         MessagingQueueCommands.Add(command, "batch_size", batchSize);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -262,9 +280,10 @@ internal sealed class InboxMessageStore(MessagingDbContext dbContext, MessagingQ
         DbConnection connection,
         DbTransaction transaction,
         string sql,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = MessagingQueueCommands.Create(connection, transaction, sql);
+        await using var command = MessagingQueueCommands.Create(connection, transaction, sql, commandTimeout);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

@@ -4,7 +4,10 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// One inbound provider message as received by the transport, before it is durable.
 /// The module owns the envelope hash and the queue partition key; callers only supply facts.
 /// </summary>
-/// <param name="RawBody">The raw provider payload. Stored verbatim as the deduplicated envelope.</param>
+/// <param name="RawBody">
+/// The exact UTF-8 payload text used as the envelope hash input. The database stores it as JSONB, so
+/// JSON formatting may be normalized there; callers must still pass the original request text here.
+/// </param>
 /// <param name="ProviderMessageId">The provider message id. Unique per inbound message.</param>
 /// <param name="CustomerExternalId">The provider identifier of the sender.</param>
 /// <param name="MessageType">The provider message type, for example <c>text</c>.</param>

@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../../BuildingBlocks/Application/BuildingBlocks.Application.csproj" />
     <ProjectReference Include="../../BuildingBlocks/Domain/BuildingBlocks.Domain.csproj" />
     <ProjectReference Include="../../BuildingBlocks/Messaging/BuildingBlocks.Messaging.csproj" />
@@ -17,7 +18,6 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
   </ItemGroup>
 
@@ -25,6 +25,7 @@
     <!-- The persistence suite drives one deterministic worker poll and reads the claim statements
          the stores run, so it needs the module-internal queue surface rather than a public seam. -->
     <InternalsVisibleTo Include="Integration.Tests" />
+    <InternalsVisibleTo Include="Contract.Tests" />
   </ItemGroup>
 
 </Project>

@@ -26,10 +26,22 @@ internal static class MessagingQueueCommands
         return connection;
     }
 
-    public static DbCommand Create(DbConnection connection, DbTransaction? transaction, string sql)
+    /// <summary>
+    /// Creates one durable queue command with an explicit finite command timeout. Without it the
+    /// command would silently inherit the connection string's <c>Command Timeout</c>, which an
+    /// operator can set to zero and thereby make a queue statement unbounded; the worker timing
+    /// policy is the single owner of that bound, and the caller's cancellation token can still stop
+    /// the command earlier.
+    /// </summary>
+    public static DbCommand Create(
+        DbConnection connection,
+        DbTransaction? transaction,
+        string sql,
+        TimeSpan commandTimeout)
     {
         var command = connection.CreateCommand();
         command.CommandText = sql;
+        command.CommandTimeout = CommandTimeoutSeconds(commandTimeout);
 
         if (transaction is not null)
         {
@@ -38,6 +50,10 @@ internal static class MessagingQueueCommands
 
         return command;
     }
+
+    /// <summary>A database timeout is expressed in whole seconds, so a sub-second policy is one second.</summary>
+    private static int CommandTimeoutSeconds(TimeSpan commandTimeout) =>
+        Math.Max(1, (int)Math.Ceiling(commandTimeout.TotalSeconds));
 
     public static void Add(DbCommand command, string name, object? value)
     {
@@ -65,9 +81,10 @@ internal static class MessagingQueueCommands
         string statusSql,
         string messageName,
         long messageId,
+        TimeSpan commandTimeout,
         CancellationToken cancellationToken)
     {
-        await using var command = Create(connection, null, statusSql);
+        await using var command = Create(connection, null, statusSql, commandTimeout);
         Add(command, "message_id", messageId);
 
         var status = await command.ExecuteScalarAsync(cancellationToken) as string;

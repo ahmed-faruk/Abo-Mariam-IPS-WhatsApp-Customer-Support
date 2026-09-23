@@ -152,6 +152,44 @@ public sealed class OutboxQueueTests(PostgresContainerFixture postgres) : Messag
     }
 
     [Fact]
+    public async Task An_absurd_provider_retry_hint_cannot_schedule_the_reply_far_into_the_future()
+    {
+        await using var host = MessagingHost.Start(
+            ConnectionString,
+            options =>
+            {
+                options.OutboxRetryDelay = TimeSpan.FromSeconds(30);
+                options.OutboxMaxRetryDelay = TimeSpan.FromMinutes(5);
+            });
+
+        var id = await EnqueueAsync(host);
+
+        await using var scope = host.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<IOutboxMessageStore>();
+        var claimed = Assert.Single(await store.ClaimAsync(10));
+
+        // A provider hint of ten years is a hint, never a schedule: the durable queue owns the bound.
+        Assert.Equal(
+            QueueFailureOutcome.RetryScheduled,
+            await store.FailAsync(
+                claimed.Id,
+                claimed.ClaimToken,
+                "MetaRetryableFailure status=429 code=130429",
+                retryDelay: TimeSpan.FromDays(3650)));
+
+        Assert.Equal("Failed", await OutboxStatusAsync(id));
+        Assert.Equal("1", await Catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.outbox_message "
+            + $"WHERE id = {id} AND run_after > now() AND run_after <= now() + interval '5 minutes'"));
+
+        // The bounded schedule is the one the queue makes claimable again.
+        await MakeOutboxDueAsync(id);
+
+        Assert.Equal(id, Assert.Single(await store.ClaimAsync(10)).Id);
+        Assert.Equal("2", await AttemptsAsync(QueueKind.Outbox, id));
+    }
+
+    [Fact]
     public async Task The_stored_attempt_limit_dead_letters_the_message()
     {
         await using var host = MessagingHost.Start(ConnectionString);

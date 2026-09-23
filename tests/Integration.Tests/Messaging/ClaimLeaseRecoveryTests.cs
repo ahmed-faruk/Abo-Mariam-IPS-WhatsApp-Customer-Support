@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
+using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Messaging;
 
@@ -123,7 +124,11 @@ public sealed class ClaimLeaseRecoveryTests(PostgresContainerFixture postgres) :
 
             Assert.Equal("Claimed", await StatusAsync(queue, firstId));
             Assert.Equal("2", await AttemptsAsync(queue, firstId));
-            Assert.Equal(string.Empty, await LastErrorAsync(queue, firstId));
+            // A recovered Outbox attempt is recorded as an uncertain provider outcome, because its
+            // transport may already have run. The Inbox holds no provider outcome, so it stays clean.
+            Assert.Equal(
+                queue == QueueKind.Outbox ? MessagingDiagnostics.ExpiredClaimRecovered : string.Empty,
+                await LastErrorAsync(queue, firstId));
             Assert.Equal(recovered.ClaimToken, Guid.Parse(await ClaimTokenAsync(queue, firstId)));
             Assert.Equal("Pending", await StatusAsync(queue, secondId));
 
@@ -207,6 +212,83 @@ public sealed class ClaimLeaseRecoveryTests(PostgresContainerFixture postgres) :
 
             Assert.Equal("DeadLettered", await StatusAsync(queue, firstId));
             Assert.Equal(secondId, Assert.Single(await ClaimAsync(queue, services, 10)).Id);
+        }
+    }
+
+    [Fact]
+    public async Task An_expired_outbox_claim_at_the_attempt_limit_dead_letters_instead_of_requeueing_forever()
+    {
+        await using var host = MessagingHost.Start(ConnectionString);
+
+        long id;
+
+        await using (var scope = host.CreateScope())
+        {
+            id = await EnqueueAsync(QueueKind.Outbox, scope.ServiceProvider, "20100002301", "expired-max");
+        }
+
+        await AlignAttemptLimitAsync(QueueKind.Outbox, id, attemptLimit: 1);
+
+        await using (var scope = host.CreateScope())
+        {
+            var claimed = Assert.Single(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+
+            Assert.Equal(1, claimed.Attempts);
+        }
+
+        await ExpireClaimAsync(QueueKind.Outbox, id);
+
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Empty(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+        }
+
+        Assert.Equal("DeadLettered", await OutboxStatusAsync(id));
+        Assert.Equal(
+            MessagingDiagnostics.ExpiredClaimExhausted,
+            await LastErrorAsync(QueueKind.Outbox, id));
+    }
+
+    [Fact]
+    public async Task An_expired_outbox_claim_below_the_attempt_limit_recovers_as_an_unknown_outcome()
+    {
+        await using var host = MessagingHost.Start(ConnectionString);
+
+        long id;
+
+        await using (var scope = host.CreateScope())
+        {
+            id = await EnqueueAsync(QueueKind.Outbox, scope.ServiceProvider, "20100002501", "expired-below");
+        }
+
+        QueueClaim abandoned;
+
+        await using (var scope = host.CreateScope())
+        {
+            abandoned = Assert.Single(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+
+            Assert.Equal(1, abandoned.Attempts);
+        }
+
+        await ExpireClaimAsync(QueueKind.Outbox, id);
+
+        await using (var scope = host.CreateScope())
+        {
+            var recovered = Assert.Single(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+
+            // The abandoned attempt may already have left the transport, so the recovery is recorded
+            // as uncertain and can never be read later as a provider refusal.
+            Assert.Equal(id, recovered.Id);
+            Assert.NotEqual(abandoned.ClaimToken, recovered.ClaimToken);
+            Assert.Equal(2, recovered.Attempts);
+            Assert.Equal(MessagingDiagnostics.ExpiredClaimRecovered, await LastErrorAsync(QueueKind.Outbox, id));
+
+            // The stale owner is still fenced out of the claim it lost.
+            await Assert.ThrowsAsync<ClaimOwnershipLostException>(
+                () => CompleteWithTokenAsync(QueueKind.Outbox, scope.ServiceProvider, id, abandoned.ClaimToken));
+
+            Assert.Equal("Claimed", await OutboxStatusAsync(id));
+            Assert.Equal(recovered.ClaimToken, Guid.Parse(await ClaimTokenAsync(QueueKind.Outbox, id)));
         }
     }
 

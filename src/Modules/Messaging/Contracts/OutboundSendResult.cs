@@ -3,32 +3,74 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// <summary>The outcome of one transport send attempt.</summary>
 public sealed record OutboundSendResult
 {
-    private OutboundSendResult(bool succeeded, string? providerMessageId, string? error)
+    private OutboundSendResult(
+        OutboundSendOutcome outcome,
+        string? providerMessageId,
+        string? error,
+        TimeSpan? retryAfter)
     {
-        Succeeded = succeeded;
+        Outcome = outcome;
         ProviderMessageId = providerMessageId;
         Error = error;
+        RetryAfter = retryAfter;
     }
 
-    public bool Succeeded { get; }
+    public OutboundSendOutcome Outcome { get; }
+
+    public bool Succeeded => Outcome == OutboundSendOutcome.Accepted;
 
     public string? ProviderMessageId { get; }
 
     public string? Error { get; }
 
-    /// <summary>The provider accepted the message.</summary>
+    public TimeSpan? RetryAfter { get; }
+
+    /// <summary>The provider accepted the message and returned its provider message id.</summary>
     public static OutboundSendResult Sent(string providerMessageId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(providerMessageId);
 
-        return new OutboundSendResult(true, providerMessageId, null);
+        return new OutboundSendResult(OutboundSendOutcome.Accepted, providerMessageId, null, null);
     }
 
-    /// <summary>The provider or the network refused the attempt; the Outbox retries it.</summary>
-    public static OutboundSendResult Failed(string error)
+    /// <summary>The attempt is known unsuccessful and may be retried by the durable Outbox policy.</summary>
+    public static OutboundSendResult RetryableFailure(string error, TimeSpan? retryAfter = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
 
-        return new OutboundSendResult(false, null, error);
+        if (retryAfter is not null && retryAfter <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retryAfter), retryAfter, "The retry delay must be positive.");
+        }
+
+        return new OutboundSendResult(OutboundSendOutcome.RetryableFailure, null, error, retryAfter);
     }
+
+    /// <summary>The unchanged request cannot succeed automatically and should be terminal.</summary>
+    public static OutboundSendResult PermanentFailure(string error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+
+        return new OutboundSendResult(OutboundSendOutcome.PermanentFailure, null, error, null);
+    }
+
+    /// <summary>The application cannot prove whether the provider accepted the attempt.</summary>
+    public static OutboundSendResult Unknown(string error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+
+        return new OutboundSendResult(OutboundSendOutcome.Unknown, null, error, null);
+    }
+
+    /// <summary>Compatibility alias for older tests that meant a retryable failed attempt.</summary>
+    public static OutboundSendResult Failed(string error)
+        => RetryableFailure(error);
+}
+
+public enum OutboundSendOutcome
+{
+    Accepted,
+    RetryableFailure,
+    PermanentFailure,
+    Unknown,
 }

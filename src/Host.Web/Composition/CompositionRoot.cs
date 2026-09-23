@@ -4,6 +4,7 @@ using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure.Ollama;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure;
@@ -44,7 +45,11 @@ public static class CompositionRoot
         // docs/CONFIGURATION.md and named in the checked-in appsettings.json template.
         services.AddCatalogModule(connectionString, options =>
             configuration.GetSection(CatalogSearchOptions.ConfigurationSectionName).Bind(options));
-        services.AddMessagingModule(connectionString);
+        services.AddMessagingModule(
+            connectionString,
+            configure: null,
+            configureWhatsApp: options =>
+                configuration.GetSection(WhatsAppOptions.ConfigurationSectionName).Bind(options));
         services.AddStorefrontModule(connectionString);
         services.AddIdentityPersistence(connectionString);
 
