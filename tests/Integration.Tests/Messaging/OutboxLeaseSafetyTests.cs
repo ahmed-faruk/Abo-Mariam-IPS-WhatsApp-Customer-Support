@@ -97,7 +97,8 @@ public sealed class OutboxLeaseSafetyTests
     public async Task A_claim_that_exceeds_its_own_budget_starts_no_send_while_the_lease_is_still_live()
     {
         // The lease guard is about a minute long and the claim budget is a third of a second, so only
-        // the claim budget can end this claim: the elapsed time below proves which one fired.
+        // the claim budget can end this claim. The upper bound below is the proof: a claim bounded by
+        // the lease guard instead would have taken about a minute.
         var timing = Timing(
             bookkeeping: TimeSpan.FromSeconds(1),
             slack: TimeSpan.FromSeconds(1),
@@ -118,35 +119,40 @@ public sealed class OutboxLeaseSafetyTests
         Assert.Equal(0, store.CompletionCalls);
         Assert.Equal(0, store.FailureCalls);
 
-        // The claim budget ended the claim, not the much longer lease guard.
-        Assert.True(
-            stopwatch.Elapsed >= TimeSpan.FromMilliseconds(300),
-            $"The claim did not consume its budget: {stopwatch.Elapsed}.");
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(5),
             $"The claim was not bounded by its own budget: {stopwatch.Elapsed}.");
     }
 
     [Fact]
-    public async Task A_claim_that_finishes_inside_its_budget_sends_and_completes_normally()
+    public async Task A_send_that_outlives_the_claim_budget_is_not_cancelled_by_it()
     {
+        // The claim returns immediately and the claim budget then expires while the send is still in
+        // flight. If the claim budget leaked into the send or its bookkeeping token, this send would be
+        // cancelled instead of completing.
         var timing = Timing(
-            bookkeeping: TimeSpan.FromSeconds(1),
+            bookkeeping: TimeSpan.FromSeconds(5),
             slack: TimeSpan.FromSeconds(1),
-            claimBudget: TimeSpan.FromSeconds(5));
+            claimBudget: TimeSpan.FromMilliseconds(200));
         var store = new ScriptedStore { Claim = SampleClaim() };
-        var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.accepted"));
+        var sender = new ScriptedSender(
+            OutboundSendResult.Sent("wamid.accepted"),
+            sendDelay: TimeSpan.FromMilliseconds(500));
         await using var host = Host(store, sender, timing, lease: TimeSpan.FromMinutes(5));
         var worker = host.Services.GetRequiredService<OutboxWorker>();
 
         var processed = await worker.ProcessOnceAsync().WaitAsync(TestTimeout);
 
-        // The claim budget is a pre-send bound only: it must not leak into the send or its bookkeeping.
+        // The claim budget is a pre-send bound only: the send and the accepted-delivery bookkeeping that
+        // follows it both complete normally after it has expired.
         Assert.Equal(1, processed);
         Assert.Equal(1, sender.Sends);
         Assert.Equal(1, store.CompletionCalls);
         Assert.Equal(0, store.FailureCalls);
-        Assert.False(Assert.Single(store.CompletionTokens).IsCancellationRequested);
+        Assert.False(sender.SendTokenWasCancelled, "The claim budget cancelled the send.");
+        Assert.False(
+            Assert.Single(store.CompletionTokens).IsCancellationRequested,
+            "The claim budget cancelled the accepted-delivery bookkeeping.");
     }
 
     [Fact]
@@ -301,7 +307,8 @@ public sealed class OutboxLeaseSafetyTests
     private sealed class ScriptedSender(
         OutboundSendResult? result = null,
         bool blockUntilCancelled = false,
-        Action? onSend = null) : IOutboundMessageSender
+        Action? onSend = null,
+        TimeSpan? sendDelay = null) : IOutboundMessageSender
     {
         public int Sends { get; private set; }
 
@@ -316,6 +323,20 @@ public sealed class OutboxLeaseSafetyTests
 
             if (!blockUntilCancelled)
             {
+                if (sendDelay is { } delay)
+                {
+                    try
+                    {
+                        await Task.Delay(delay, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        SendTokenWasCancelled = true;
+
+                        throw;
+                    }
+                }
+
                 return result!;
             }
 

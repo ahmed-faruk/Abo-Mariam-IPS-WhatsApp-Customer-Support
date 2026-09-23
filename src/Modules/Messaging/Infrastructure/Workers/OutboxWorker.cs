@@ -116,22 +116,27 @@ public sealed class OutboxWorker : BackgroundService
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                // The claim ended before it produced work, so no send may begin and nothing is recorded
-                // against the message: it is still durable, unclaimed and untouched, and the next poll
-                // claims it fresh. Nothing here is a provider outcome.
+                // Cancellation is observed at the client, not necessarily inside the database, so the
+                // claim may already have committed before this token fired. Either way no provider send
+                // starts here and no provider outcome is invented: a claim that did not commit leaves the
+                // message claimable by a later poll, and a claim that committed stays held until its lease
+                // expires, where the existing lease recovery handles that row.
                 if (claimBudget.IsCancellationRequested)
                 {
                     logger.LogWarning(
                         "The Outbox poll stopped before claiming: the claim exceeded its configured "
-                        + "overall claim budget of {ClaimBudget}, so no send started. The work stays "
-                        + "durable and unclaimed.",
+                        + "overall claim budget of {ClaimBudget}, so no provider send started. A claim "
+                        + "that did not commit stays available; one that committed before this "
+                        + "cancellation was observed is recovered by its lease.",
                         timing.ClaimBudget);
                 }
                 else
                 {
                     logger.LogWarning(
                         "The Outbox poll stopped before claiming: the claim did not finish inside the "
-                        + "lease safety deadline. The work stays durable and unclaimed.");
+                        + "lease safety deadline, so no provider send started. A claim that did not "
+                        + "commit stays available; one that committed before this cancellation was "
+                        + "observed is recovered by its lease.");
                 }
 
                 break;
