@@ -94,7 +94,8 @@ Typical questions:
 ## 3.1 In scope for the proof-of-concept
 
 1. WhatsApp Cloud API inbound text messages.
-2. Reactive text replies within the active WhatsApp service window.
+2. Reactive text replies authorized while the active WhatsApp service window is open; delivery or
+   retry of an already accepted durable reply remains part of that same reply.
 3. Egyptian-Arabic intent recognition and structured filter extraction.
 4. Product search by:
    - brand;
