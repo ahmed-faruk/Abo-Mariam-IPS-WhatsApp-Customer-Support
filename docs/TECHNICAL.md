@@ -836,9 +836,9 @@ forever. A free-form message the provider itself refuses as no longer allowed ou
 re-engagement error the adapter classifies as permanent, currently 131047 - terminates on that attempt
 instead of being retried.
 
-Lean demo contains no proactive template workflow. If closed:
+Lean demo contains no proactive template workflow. If closed when a new reply would be created:
 
-- do not send free-form;
+- do not create or enqueue a new free-form reply;
 - flag conversation;
 - wait for another inbound customer message.
 
