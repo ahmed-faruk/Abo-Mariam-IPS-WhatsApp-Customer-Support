@@ -31,7 +31,14 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
     /// </summary>
     private const string RecoverExpiredClaimsSql = """
         UPDATE messaging.outbox_message AS m
-        SET delivery_status = 'Pending',
+        SET delivery_status = CASE
+                WHEN m.attempts >= m.max_attempts THEN 'DeadLettered'
+                ELSE 'Pending'
+            END,
+            last_error = CASE
+                WHEN m.attempts >= m.max_attempts THEN 'Unknown provider outcome: expired claim reached max attempts.'
+                ELSE m.last_error
+            END,
             claim_token = NULL,
             claim_expires_at = NULL
         WHERE m.id IN (
@@ -135,9 +142,9 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
 
     private const string FailSql = """
         UPDATE messaging.outbox_message
-        SET delivery_status = CASE WHEN attempts >= max_attempts THEN 'DeadLettered' ELSE 'Failed' END,
+        SET delivery_status = CASE WHEN @terminal OR attempts >= max_attempts THEN 'DeadLettered' ELSE 'Failed' END,
             last_error = @last_error,
-            run_after = CASE WHEN attempts >= max_attempts THEN run_after ELSE now() + @retry_delay END,
+            run_after = CASE WHEN @terminal OR attempts >= max_attempts THEN run_after ELSE now() + @retry_delay END,
             claim_token = NULL,
             claim_expires_at = NULL
         WHERE id = @outbox_message_id
@@ -153,7 +160,7 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
     /// <summary>
     /// The stable delivery key of one logical Outbox message. It is derived from the durable Outbox
     /// identity, so a retry and a later reclaim of the same message always present the same key to
-    /// the transport and the provider can reconcile instead of delivering twice.
+    /// the transport for local logs and correlation. It is not a provider idempotency guarantee.
     /// </summary>
     private static string DeliveryKey(long outboxMessageId) =>
         string.Create(CultureInfo.InvariantCulture, $"outbox:{outboxMessageId}");
@@ -265,6 +272,8 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         long outboxMessageId,
         Guid claimToken,
         string error,
+        bool terminal = false,
+        TimeSpan? retryDelay = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
@@ -274,7 +283,8 @@ internal sealed class OutboxMessageStore(MessagingDbContext dbContext, Messaging
         MessagingQueueCommands.Add(command, "outbox_message_id", outboxMessageId);
         MessagingQueueCommands.Add(command, "claim_token", claimToken);
         MessagingQueueCommands.Add(command, "last_error", error);
-        MessagingQueueCommands.Add(command, "retry_delay", options.OutboxRetryDelay);
+        MessagingQueueCommands.Add(command, "terminal", terminal);
+        MessagingQueueCommands.Add(command, "retry_delay", retryDelay ?? options.OutboxRetryDelay);
 
         var status = await command.ExecuteScalarAsync(cancellationToken) as string
             ?? throw await MessagingQueueCommands.LostClaimAsync(

@@ -182,6 +182,7 @@ public sealed class CatalogOptionsValidationTests
         builder.Configuration["ConnectionStrings:DefaultConnection"] = UnusedConnectionString;
         builder.Configuration["Catalog:Search:SizeToleranceInches"] = "0.3";
         builder.Configuration["Catalog:Search:SoftBudgetTolerance"] = "0.45";
+        ConfigureValidWhatsAppOptions(builder.Configuration);
 
         builder.Services.AddApplicationComposition(builder.Configuration);
 
@@ -209,6 +210,7 @@ public sealed class CatalogOptionsValidationTests
 
         builder.Logging.ClearProviders();
         builder.Configuration["ConnectionStrings:DefaultConnection"] = UnusedConnectionString;
+        ConfigureValidWhatsAppOptions(builder.Configuration);
         builder.Services.AddApplicationComposition(builder.Configuration);
         builder.Services.RemoveAll<IHostedService>();
 
@@ -267,4 +269,13 @@ public sealed class CatalogOptionsValidationTests
 
     private static CatalogSearchOptions ResolveSearchOptions(IServiceProvider provider) =>
         provider.GetRequiredService<IOptions<CatalogSearchOptions>>().Value;
+
+    private static void ConfigureValidWhatsAppOptions(IConfiguration configuration)
+    {
+        configuration["WhatsApp:ApiVersion"] = "v23.0";
+        configuration["WhatsApp:PhoneNumberId"] = "123456789";
+        configuration["WhatsApp:VerifyToken"] = "verify-token";
+        configuration["WhatsApp:AppSecret"] = "app-secret";
+        configuration["WhatsApp:AccessToken"] = "access-token";
+    }
 }

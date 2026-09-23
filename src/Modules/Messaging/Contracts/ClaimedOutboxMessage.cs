@@ -12,8 +12,8 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 /// <param name="MaxAttempts">The stored attempt limit for this message.</param>
 /// <param name="DeliveryKey">
 /// The stable identity of this logical delivery, for example <c>outbox:42</c>. It is derived from
-/// the Outbox identity, so every retry and every later reclaim of the same message presents the same
-/// key to <see cref="IOutboundMessageSender"/>.
+/// the Outbox identity, so every retry and every later reclaim of the same message can be correlated
+/// locally. It is not a promise that an external provider can deduplicate sends by this value.
 /// </param>
 /// <param name="ClaimToken">
 /// The lease owner of this claim. Completion and failure must present it, so an owner whose lease

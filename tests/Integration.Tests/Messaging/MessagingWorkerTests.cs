@@ -133,10 +133,47 @@ public sealed class MessagingWorkerTests(PostgresContainerFixture postgres) : Me
         Assert.Equal(1, await worker.ProcessOnceAsync());
 
         Assert.Equal("Failed", await OutboxStatusAsync(id));
-        Assert.Equal("Meta is unreachable", await Catalog.ScalarAsync(
+        Assert.Equal("Unknown provider outcome: Meta is unreachable", await Catalog.ScalarAsync(
             $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
         Assert.Equal("1", await Catalog.ScalarAsync(
             $"SELECT count(*) FROM messaging.outbox_message WHERE id = {id} AND sent_at IS NULL"));
+    }
+
+    [Fact]
+    public async Task The_outbox_worker_dead_letters_a_permanent_failure_without_spending_remaining_attempts()
+    {
+        var id = await EnqueueOutboundAsync();
+
+        await using var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(
+            new StubOutboundSender { Result = _ => OutboundSendResult.PermanentFailure("Meta rejected unchanged request") }));
+        await using var scope = host.CreateScope();
+        var worker = scope.ServiceProvider.GetRequiredService<OutboxWorker>();
+
+        Assert.Equal(1, await worker.ProcessOnceAsync());
+
+        Assert.Equal("DeadLettered", await OutboxStatusAsync(id));
+        Assert.Equal("Meta rejected unchanged request", await Catalog.ScalarAsync(
+            $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
+        Assert.Equal("1", await Catalog.ScalarAsync(
+            $"SELECT attempts FROM messaging.outbox_message WHERE id = {id}"));
+        Assert.Equal(0, await worker.ProcessOnceAsync());
+    }
+
+    [Fact]
+    public async Task The_outbox_worker_records_unknown_outcome_truthfully()
+    {
+        var id = await EnqueueOutboundAsync();
+
+        await using var host = StartHost(services => services.AddSingleton<IOutboundMessageSender>(
+            new StubOutboundSender { Result = _ => OutboundSendResult.Unknown("Unknown provider outcome: timeout") }));
+        await using var scope = host.CreateScope();
+        var worker = scope.ServiceProvider.GetRequiredService<OutboxWorker>();
+
+        Assert.Equal(1, await worker.ProcessOnceAsync());
+
+        Assert.Equal("Failed", await OutboxStatusAsync(id));
+        Assert.Equal("Unknown provider outcome: timeout", await Catalog.ScalarAsync(
+            $"SELECT last_error FROM messaging.outbox_message WHERE id = {id}"));
     }
 
     [Fact]

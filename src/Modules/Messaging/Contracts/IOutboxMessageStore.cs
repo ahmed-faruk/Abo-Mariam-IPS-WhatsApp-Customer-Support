@@ -50,5 +50,7 @@ public interface IOutboxMessageStore
         long outboxMessageId,
         Guid claimToken,
         string error,
+        bool terminal = false,
+        TimeSpan? retryDelay = null,
         CancellationToken cancellationToken = default);
 }

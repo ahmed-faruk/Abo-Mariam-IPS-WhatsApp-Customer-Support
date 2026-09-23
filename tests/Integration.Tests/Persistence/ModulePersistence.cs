@@ -6,6 +6,7 @@ using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Identity.Infrastructure.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Persistence;
+using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Storefront.Infrastructure.Persistence;
 
 namespace WhatsAppMonitorAssistant.Integration.Tests.Persistence;
@@ -21,6 +22,12 @@ internal static class ModulePersistence
         var configuration = new ConfigurationManager
         {
             [$"ConnectionStrings:{CompositionRoot.ConnectionStringName}"] = connectionString,
+            [$"{WhatsAppOptions.ConfigurationSectionName}:ApiVersion"] = "v23.0",
+            [$"{WhatsAppOptions.ConfigurationSectionName}:PhoneNumberId"] = "123456789",
+            [$"{WhatsAppOptions.ConfigurationSectionName}:WabaId"] = "987654321",
+            [$"{WhatsAppOptions.ConfigurationSectionName}:VerifyToken"] = "test-verify-token",
+            [$"{WhatsAppOptions.ConfigurationSectionName}:AppSecret"] = "test-app-secret",
+            [$"{WhatsAppOptions.ConfigurationSectionName}:AccessToken"] = "test-access-token",
         };
 
         var services = new ServiceCollection();

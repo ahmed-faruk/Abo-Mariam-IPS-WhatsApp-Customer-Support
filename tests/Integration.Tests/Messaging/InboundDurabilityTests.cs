@@ -106,4 +106,71 @@ public sealed class InboundDurabilityTests(PostgresContainerFixture postgres) : 
         // The duplicate delivery is a complete no-op, so the unmatched envelope was not left behind.
         Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
     }
+
+    [Fact]
+    public async Task One_webhook_envelope_can_anchor_multiple_customer_messages()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+        await using var scope = host.CreateScope();
+        var inbound = scope.ServiceProvider.GetRequiredService<IInboundMessageQueue>();
+        const string rawBody = """{"entry":[{"changes":[{"value":{"messages":[{"id":"wamid.multi-a"},{"id":"wamid.multi-b"}]}}]}]}""";
+
+        var first = await inbound.EnqueueAsync(new InboundMessageEnvelope(
+            rawBody,
+            "wamid.multi-a",
+            "20100003001",
+            "text",
+            MessagingSamples.ProviderTimestamp,
+            "one"));
+        var second = await inbound.EnqueueAsync(new InboundMessageEnvelope(
+            rawBody,
+            "wamid.multi-b",
+            "20100003001",
+            "text",
+            MessagingSamples.ProviderTimestamp.AddSeconds(1),
+            "two"));
+
+        Assert.NotEqual(first.InboxMessageId, second.InboxMessageId);
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+        Assert.Equal("2", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+        Assert.Equal("1", await catalog.ScalarAsync(
+            "SELECT count(DISTINCT envelope_id) FROM messaging.inbox_message"));
+    }
+
+    [Fact]
+    public async Task A_partial_multi_message_retry_deduplicates_the_prefix_and_accepts_the_missing_message()
+    {
+        await using var host = MessagingHost.Start(connectionString);
+        await using var scope = host.CreateScope();
+        var inbound = scope.ServiceProvider.GetRequiredService<IInboundMessageQueue>();
+        const string rawBody = """{"entry":[{"changes":[{"value":{"messages":[{"id":"wamid.retry-a"},{"id":"wamid.retry-b"}]}}]}]}""";
+
+        var first = await inbound.EnqueueAsync(new InboundMessageEnvelope(
+            rawBody,
+            "wamid.retry-a",
+            "20100003002",
+            "text",
+            MessagingSamples.ProviderTimestamp,
+            "one"));
+        var duplicate = await inbound.EnqueueAsync(new InboundMessageEnvelope(
+            rawBody,
+            "wamid.retry-a",
+            "20100003002",
+            "text",
+            MessagingSamples.ProviderTimestamp,
+            "one"));
+        var second = await inbound.EnqueueAsync(new InboundMessageEnvelope(
+            rawBody,
+            "wamid.retry-b",
+            "20100003002",
+            "text",
+            MessagingSamples.ProviderTimestamp.AddSeconds(1),
+            "two"));
+
+        Assert.Equal(first.InboxMessageId, duplicate.InboxMessageId);
+        Assert.True(duplicate.IsDuplicate);
+        Assert.False(second.IsDuplicate);
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+        Assert.Equal("2", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+    }
 }

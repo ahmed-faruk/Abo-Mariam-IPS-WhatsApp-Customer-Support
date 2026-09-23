@@ -210,6 +210,40 @@ public sealed class ClaimLeaseRecoveryTests(PostgresContainerFixture postgres) :
         }
     }
 
+    [Fact]
+    public async Task An_expired_outbox_claim_at_the_attempt_limit_dead_letters_instead_of_requeueing_forever()
+    {
+        await using var host = MessagingHost.Start(ConnectionString);
+
+        long id;
+
+        await using (var scope = host.CreateScope())
+        {
+            id = await EnqueueAsync(QueueKind.Outbox, scope.ServiceProvider, "20100002301", "expired-max");
+        }
+
+        await AlignAttemptLimitAsync(QueueKind.Outbox, id, attemptLimit: 1);
+
+        await using (var scope = host.CreateScope())
+        {
+            var claimed = Assert.Single(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+
+            Assert.Equal(1, claimed.Attempts);
+        }
+
+        await ExpireClaimAsync(QueueKind.Outbox, id);
+
+        await using (var scope = host.CreateScope())
+        {
+            Assert.Empty(await ClaimAsync(QueueKind.Outbox, scope.ServiceProvider, 10));
+        }
+
+        Assert.Equal("DeadLettered", await OutboxStatusAsync(id));
+        Assert.Equal(
+            "Unknown provider outcome: expired claim reached max attempts.",
+            await LastErrorAsync(QueueKind.Outbox, id));
+    }
+
     /// <summary>
     /// The Inbox attempt limit is queue policy while the Outbox limit is stored per message, so the
     /// stored Outbox limit is aligned with the configured Inbox limit for the shared assertion.

@@ -124,22 +124,30 @@ public sealed class OutboxWorker(
         }
         catch (Exception exception)
         {
-            await RecordFailureAsync(store, message, exception.Message);
+            await RecordFailureAsync(
+                store,
+                message,
+                $"Unknown provider outcome: {exception.Message}");
 
             return;
         }
 
-        if (!result.Succeeded)
+        if (result.Outcome == OutboundSendOutcome.Accepted)
         {
-            await RecordFailureAsync(store, message, result.Error ?? "The provider refused the send.");
+            // The provider accepted the delivery, so this attempt has left the transport. Only the
+            // bookkeeping of the accepted delivery is left, and a failure there is never evidence that
+            // the provider refused the message: reporting it as a failed send would deliver twice.
+            await RecordAcceptedDeliveryAsync(store, message, result.ProviderMessageId!);
 
             return;
         }
 
-        // The provider accepted the delivery, so this attempt has left the transport. Only the
-        // bookkeeping of the accepted delivery is left, and a failure there is never evidence that
-        // the provider refused the message: reporting it as a failed send would deliver twice.
-        await RecordAcceptedDeliveryAsync(store, message, result.ProviderMessageId!);
+        await RecordFailureAsync(
+            store,
+            message,
+            result.Error ?? ErrorFor(result.Outcome),
+            terminal: result.Outcome == OutboundSendOutcome.PermanentFailure,
+            retryDelay: result.RetryAfter);
     }
 
     private async Task RecordAcceptedDeliveryAsync(
@@ -162,10 +170,9 @@ public sealed class OutboxWorker(
                 logger.LogWarning(
                     exception,
                     "Outbox message {OutboxMessageId} is no longer claimed by this worker, so the accepted "
-                    + "delivery was not recorded. The delivery key {DeliveryKey} keeps every later attempt "
-                    + "reconcilable with the provider.",
-                    message.Id,
-                    message.DeliveryKey);
+                    + "delivery was not recorded. A later retry may not be able to prove whether the "
+                    + "provider already accepted this delivery.",
+                    message.Id);
 
                 return;
             }
@@ -182,10 +189,9 @@ public sealed class OutboxWorker(
                 logger.LogError(
                     exception,
                     "The accepted delivery of Outbox message {OutboxMessageId} could not be recorded. Its "
-                    + "claim lease recovers the message and the stable delivery key {DeliveryKey} keeps the "
-                    + "next attempt reconcilable instead of an unnoticed duplicate delivery.",
-                    message.Id,
-                    message.DeliveryKey);
+                    + "claim lease recovers the message, but the previous provider outcome is now "
+                    + "ambiguous and a later retry may duplicate externally.",
+                    message.Id);
             }
         }
     }
@@ -193,13 +199,21 @@ public sealed class OutboxWorker(
     private async Task RecordFailureAsync(
         IOutboxMessageStore store,
         ClaimedOutboxMessage message,
-        string error)
+        string error,
+        bool terminal = false,
+        TimeSpan? retryDelay = null)
     {
         QueueFailureOutcome outcome;
 
         try
         {
-            outcome = await store.FailAsync(message.Id, message.ClaimToken, error, CancellationToken.None);
+            outcome = await store.FailAsync(
+                message.Id,
+                message.ClaimToken,
+                error,
+                terminal,
+                retryDelay,
+                CancellationToken.None);
         }
         catch (ClaimOwnershipLostException exception)
         {
@@ -220,4 +234,13 @@ public sealed class OutboxWorker(
             outcome,
             error);
     }
+
+    private static string ErrorFor(OutboundSendOutcome outcome) =>
+        outcome switch
+        {
+            OutboundSendOutcome.RetryableFailure => "The provider reported a retryable failure.",
+            OutboundSendOutcome.PermanentFailure => "The provider reported a permanent failure.",
+            OutboundSendOutcome.Unknown => "Unknown provider outcome: acceptance could not be established.",
+            _ => "The outbound send did not complete.",
+        };
 }
