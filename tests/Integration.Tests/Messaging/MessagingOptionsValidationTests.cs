@@ -137,6 +137,55 @@ public sealed class MessagingOptionsValidationTests
     }
 
     [Fact]
+    public void The_queue_lease_bound_is_exclusive_at_the_lease_safety_slack()
+    {
+        // The lease guard is the claim lease minus the slack, so a lease equal to the slack leaves no
+        // guard at all and the queue-options layer rejects it.
+        using var rejected = BuildProvider(
+            queue => queue.ClaimLeaseDuration = MessagingTimingPolicy.Default.LeaseSafetySlack);
+
+        var exception = Assert.Throws<OptionsValidationException>(() => _ = ResolveQueueOptions(rejected));
+
+        Assert.Contains(nameof(MessagingQueueOptions.ClaimLeaseDuration), exception.Message, StringComparison.Ordinal);
+
+        // One tick more is the smallest lease the queue-options layer itself accepts.
+        var smallestLease = MessagingTimingPolicy.Default.LeaseSafetySlack + TimeSpan.FromTicks(1);
+        using var accepted = BuildProvider(queue => queue.ClaimLeaseDuration = smallestLease);
+
+        Assert.Equal(smallestLease, ResolveQueueOptions(accepted).ClaimLeaseDuration);
+
+        // That lease is still far too short for a real transport attempt, which is a different layer's
+        // invariant: the combined WhatsApp budget must still reject it rather than declaring the host
+        // configuration valid.
+        using var transport = BuildTransportProvider(
+            queue => queue.ClaimLeaseDuration = smallestLease,
+            _ => { });
+
+        var transportException = Assert.Throws<OptionsValidationException>(
+            () => _ = ResolveWhatsAppOptions(transport));
+
+        Assert.Contains(nameof(WhatsAppOptions.TimeoutSeconds), transportException.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_queue_lease_bound_includes_the_schedulable_ceiling_exactly()
+    {
+        // The guard is a scheduled cancellation, so the ceiling itself is a valid lease and one
+        // millisecond beyond it is not.
+        using var accepted = BuildProvider(
+            queue => queue.ClaimLeaseDuration = MessagingTimingPolicy.MaxClaimLease);
+
+        Assert.Equal(MessagingTimingPolicy.MaxClaimLease, ResolveQueueOptions(accepted).ClaimLeaseDuration);
+
+        using var rejected = BuildProvider(
+            queue => queue.ClaimLeaseDuration = MessagingTimingPolicy.MaxClaimLease + TimeSpan.FromMilliseconds(1));
+
+        var exception = Assert.Throws<OptionsValidationException>(() => _ = ResolveQueueOptions(rejected));
+
+        Assert.Contains(nameof(MessagingQueueOptions.ClaimLeaseDuration), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_transport_budget_error_never_echoes_a_WhatsApp_secret()
     {
         using var provider = BuildTransportProvider(

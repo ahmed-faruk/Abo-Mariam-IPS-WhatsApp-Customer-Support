@@ -53,12 +53,15 @@ jobs:
       #
       # Required gate                Owning ticket                       Step to add
       # Integration.Tests            #5 (also #4 for PostgreSQL)         dotnet test tests/Integration.Tests --no-build   (PostgreSQL Testcontainer)
-      # Contract.Tests (Meta part)   #13 (Meta webhook/outbound)         the Ollama part of tests/Contract.Tests is enabled above with #10
       # E2E.Tests                    #15 (fake Meta/Ollama flow)         dotnet test tests/E2E.Tests --no-build
       # Playwright critical smoke    #14 (Admin UI)                      npx playwright test
       # Coverage (>=80% Domain/App)  CI expansion                        dotnet test ... --collect:"XPlat Code Coverage" + threshold check
       # Vulnerability scan           CI expansion                        dotnet list package --vulnerable --include-transitive
       # Docker image build           pilot work (post-acceptance)        docker build
+      #
+      # Contract.Tests is not a future gate: the Meta webhook and outbound contract fixtures of
+      # #13 ship inside the enabled "Contract tests" step above alongside the Ollama fixtures of
+      # #10, so they need no step of their own.
       #
       # Shape of a gate step once its ticket lands (do not use continue-on-error
       # for a required gate):

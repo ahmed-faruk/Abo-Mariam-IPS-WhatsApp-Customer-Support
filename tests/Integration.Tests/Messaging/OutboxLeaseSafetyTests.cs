@@ -22,11 +22,18 @@ public sealed class OutboxLeaseSafetyTests
     [Fact]
     public async Task Accepted_delivery_bookkeeping_is_bounded_by_one_budget_shared_by_its_retries()
     {
-        var timing = Timing(bookkeeping: TimeSpan.FromMilliseconds(500), slack: TimeSpan.FromSeconds(1));
+        // One total budget of a second. The first two attempts each consume 300 ms of it before
+        // failing transiently; the third then waits for the token. A budget restarted for each retry
+        // would let that third attempt wait a further full second, so the total elapsed time is the
+        // discriminator between one shared budget and a fresh budget per attempt.
+        var budget = TimeSpan.FromMilliseconds(1_000);
+        var perAttempt = TimeSpan.FromMilliseconds(300);
+        var timing = Timing(bookkeeping: budget, slack: TimeSpan.FromSeconds(1));
         var store = new ScriptedStore
         {
             Claim = SampleClaim(),
             TransientCompletionFailures = 2,
+            TransientFailureDelay = perAttempt,
             BlockCompletion = true,
         };
         var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.accepted"));
@@ -41,17 +48,81 @@ public sealed class OutboxLeaseSafetyTests
         Assert.Equal(1, processed);
         Assert.Equal(1, sender.Sends);
 
-        // The three bounded attempts still happen, but they share one budget: every attempt received
-        // the same cancellation token, and the hanging last attempt ended after one test-only budget of
-        // half a second instead of getting a fresh timeout of its own.
+        // The three bounded attempts still happen and every attempt received the same token.
         Assert.Equal(3, store.CompletionCalls);
         Assert.Single(store.CompletionTokens.Distinct());
         Assert.All(store.CompletionTokens, token => Assert.True(token.IsCancellationRequested));
+
+        // Both transient attempts really spent their delay, and the hanging third one was then ended at
+        // the single shared deadline: the total stays inside one budget plus the delay already spent,
+        // where a per-retry budget would have waited a whole fresh budget beyond the two delays.
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromMilliseconds(1_500),
-            $"The bookkeeping took {stopwatch.Elapsed}, so the attempts did not share one budget.");
+            stopwatch.Elapsed >= perAttempt + perAttempt,
+            $"The transient attempts did not consume their delay: {stopwatch.Elapsed}.");
+        Assert.True(
+            stopwatch.Elapsed < budget + perAttempt,
+            $"The bookkeeping took {stopwatch.Elapsed}, so the retries did not share one total budget.");
 
         // A successful accepted delivery is never reported as a failure.
+        Assert.Equal(0, store.FailureCalls);
+    }
+
+    [Fact]
+    public async Task Known_acceptance_bookkeeping_is_not_cancelled_by_host_shutdown()
+    {
+        var timing = Timing(bookkeeping: TimeSpan.FromSeconds(1), slack: TimeSpan.FromSeconds(1));
+        var store = new ScriptedStore { Claim = SampleClaim() };
+        using var shutdown = new CancellationTokenSource();
+        var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.accepted"), onSend: shutdown.Cancel);
+        await using var host = Host(store, sender, timing, lease: TimeSpan.FromMinutes(5));
+        var worker = host.Services.GetRequiredService<OutboxWorker>();
+
+        var processed = await worker.ProcessOnceAsync(shutdown.Token).WaitAsync(TestTimeout);
+
+        Assert.Equal(1, processed);
+        Assert.True(shutdown.IsCancellationRequested, "The test did not cancel the host token.");
+        Assert.Equal(1, sender.Sends);
+
+        // The provider already accepted the delivery, so host shutdown may not throw that knowledge
+        // away: the completion still runs with a token that is not cancelled merely because the host
+        // token is.
+        Assert.Equal(1, store.CompletionCalls);
+        Assert.False(
+            Assert.Single(store.CompletionTokens).IsCancellationRequested,
+            "Host shutdown cancelled the accepted-delivery bookkeeping.");
+        Assert.Equal(0, store.FailureCalls);
+    }
+
+    [Fact]
+    public async Task Known_acceptance_bookkeeping_still_honours_the_lease_deadline_after_host_shutdown()
+    {
+        // The bookkeeping budget is deliberately longer than the lease guard, so only the lease
+        // deadline can end this bookkeeping.
+        var timing = Timing(bookkeeping: TimeSpan.FromSeconds(30), slack: TimeSpan.FromMilliseconds(300));
+        var store = new ScriptedStore { Claim = SampleClaim(), BlockCompletion = true };
+        using var shutdown = new CancellationTokenSource();
+        var sender = new ScriptedSender(OutboundSendResult.Sent("wamid.accepted"), onSend: shutdown.Cancel);
+        await using var host = Host(store, sender, timing, lease: TimeSpan.FromSeconds(1));
+        var worker = host.Services.GetRequiredService<OutboxWorker>();
+        var stopwatch = Stopwatch.StartNew();
+
+        var processed = await worker.ProcessOnceAsync(shutdown.Token).WaitAsync(TestTimeout);
+
+        stopwatch.Stop();
+
+        Assert.Equal(1, processed);
+        Assert.Equal(1, sender.Sends);
+        Assert.Equal(1, store.CompletionCalls);
+
+        // Host shutdown does not cancel the accepted-delivery bookkeeping, but the lease-safety
+        // deadline still does, so no completion is written under a claim that is about to be
+        // recoverable.
+        Assert.True(
+            Assert.Single(store.CompletionTokens).IsCancellationRequested,
+            "The lease deadline did not bound the accepted-delivery bookkeeping.");
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"The bookkeeping outlived the lease safety deadline: {stopwatch.Elapsed}.");
         Assert.Equal(0, store.FailureCalls);
     }
 
@@ -169,7 +240,8 @@ public sealed class OutboxLeaseSafetyTests
 
     private sealed class ScriptedSender(
         OutboundSendResult? result = null,
-        bool blockUntilCancelled = false) : IOutboundMessageSender
+        bool blockUntilCancelled = false,
+        Action? onSend = null) : IOutboundMessageSender
     {
         public int Sends { get; private set; }
 
@@ -180,6 +252,7 @@ public sealed class OutboxLeaseSafetyTests
             CancellationToken cancellationToken = default)
         {
             Sends++;
+            onSend?.Invoke();
 
             if (!blockUntilCancelled)
             {
@@ -211,6 +284,9 @@ public sealed class OutboxLeaseSafetyTests
 
         /// <summary>How many leading completion attempts fail as a transient database error would.</summary>
         public int TransientCompletionFailures { get; init; }
+
+        /// <summary>How long a transient completion failure takes before it fails.</summary>
+        public TimeSpan TransientFailureDelay { get; init; }
 
         public int CompletionCalls { get; private set; }
 
@@ -257,6 +333,11 @@ public sealed class OutboxLeaseSafetyTests
 
             if (CompletionCalls <= TransientCompletionFailures)
             {
+                if (TransientFailureDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(TransientFailureDelay, cancellationToken);
+                }
+
                 throw new InvalidOperationException("transient bookkeeping failure");
             }
 
