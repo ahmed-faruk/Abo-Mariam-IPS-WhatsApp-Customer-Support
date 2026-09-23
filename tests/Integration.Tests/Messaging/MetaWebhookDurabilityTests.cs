@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Endpoints;
@@ -80,6 +81,159 @@ public sealed class MetaWebhookDurabilityTests(PostgresContainerFixture postgres
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("2", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
         Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+    }
+
+    [Fact]
+    public async Task The_webhook_cannot_answer_while_the_durable_acceptance_is_still_blocked()
+    {
+        using var server = Server();
+        const string body = """
+            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004005","id":"wamid.http-5","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            """;
+        using var request = SignedRequest(body);
+
+        await using var acceptedByTest = await BlockEnvelopeInsertAsync();
+
+        var responseTask = server.CreateClient().SendAsync(request);
+
+        // The acceptance is held inside its database transaction, so the endpoint cannot have
+        // answered yet: the 200 follows the commit, it is not the handler returning.
+        await Task.Delay(TimeSpan.FromSeconds(2));
+
+        Assert.False(responseTask.IsCompleted);
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+
+        await ReleaseEnvelopeInsertAsync(acceptedByTest);
+
+        var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // An independent connection sees the committed envelope and its Inbox row.
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+        Assert.Equal("1", await catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.inbox_message WHERE provider_message_id = 'wamid.http-5'"));
+    }
+
+    [Fact]
+    public async Task A_real_persistence_failure_cannot_produce_http_200()
+    {
+        using var server = Server();
+        const string body = """
+            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004006","id":"wamid.http-6","timestamp":"1700000000","type":"text","text":{"body":"hello"}}]}}]}]}
+            """;
+
+        await catalog.ExecuteAsync(
+            """
+            CREATE FUNCTION messaging.test_reject_every_inbox_row() RETURNS trigger AS $function$
+            BEGIN
+                RAISE EXCEPTION 'test fault: inbox insert rejected';
+            END;
+            $function$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER test_reject_every_inbox_row BEFORE INSERT ON messaging.inbox_message
+            FOR EACH ROW EXECUTE FUNCTION messaging.test_reject_every_inbox_row();
+            """);
+
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        // The rejected acceptance rolled back whole: neither the Inbox row nor its envelope survives.
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+        Assert.Equal("0", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+    }
+
+    [Fact]
+    public async Task A_committed_prefix_is_deduplicated_when_the_retry_accepts_the_message_that_failed()
+    {
+        using var server = Server();
+        const string body = """
+            {"entry":[{"changes":[{"value":{"messages":[{"from":"20100004007","id":"wamid.http-7a","timestamp":"1700000000","type":"text","text":{"body":"one"}},{"from":"20100004007","id":"wamid.http-7b","timestamp":"1700000001","type":"text","text":{"body":"two"}}]}}]}]}
+            """;
+
+        // Only the second message is rejected by the database, so the first genuinely commits inside
+        // the first request while the second genuinely rolls back.
+        await catalog.ExecuteAsync(
+            """
+            CREATE FUNCTION messaging.test_reject_second_message() RETURNS trigger AS $function$
+            BEGIN
+                IF NEW.provider_message_id = 'wamid.http-7b' THEN
+                    RAISE EXCEPTION 'test fault: second message rejected';
+                END IF;
+
+                RETURN NEW;
+            END;
+            $function$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER test_reject_second_message BEFORE INSERT ON messaging.inbox_message
+            FOR EACH ROW EXECUTE FUNCTION messaging.test_reject_second_message();
+            """);
+
+        using var first = SignedRequest(body);
+        var firstResponse = await server.CreateClient().SendAsync(first);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, firstResponse.StatusCode);
+        Assert.Equal("1", await catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.inbox_message WHERE provider_message_id = 'wamid.http-7a'"));
+        Assert.Equal("0", await catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.inbox_message WHERE provider_message_id = 'wamid.http-7b'"));
+
+        await catalog.ExecuteAsync("DROP TRIGGER test_reject_second_message ON messaging.inbox_message");
+
+        using var retry = SignedRequest(body);
+        var retryResponse = await server.CreateClient().SendAsync(retry);
+
+        Assert.Equal(HttpStatusCode.OK, retryResponse.StatusCode);
+        Assert.Equal("1", await catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.inbox_message WHERE provider_message_id = 'wamid.http-7a'"));
+        Assert.Equal("1", await catalog.ScalarAsync(
+            "SELECT count(*) FROM messaging.inbox_message WHERE provider_message_id = 'wamid.http-7b'"));
+        Assert.Equal("2", await catalog.ScalarAsync("SELECT count(*) FROM messaging.inbox_message"));
+        Assert.Equal("1", await catalog.ScalarAsync("SELECT count(*) FROM messaging.webhook_envelope"));
+    }
+
+    /// <summary>
+    /// Holds the real durable acceptance of this database inside its transaction by blocking the
+    /// envelope insert, so the test can observe the HTTP response that has not happened yet.
+    /// </summary>
+    private async Task<NpgsqlConnection> BlockEnvelopeInsertAsync()
+    {
+        await catalog.ExecuteAsync(
+            """
+            CREATE FUNCTION messaging.test_block_envelope_insert() RETURNS trigger AS $function$
+            BEGIN
+                PERFORM pg_advisory_xact_lock(918273645);
+
+                RETURN NEW;
+            END;
+            $function$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER test_block_envelope_insert BEFORE INSERT ON messaging.webhook_envelope
+            FOR EACH ROW EXECUTE FUNCTION messaging.test_block_envelope_insert();
+            """);
+
+        var connection = new NpgsqlConnection(connectionString);
+
+        await connection.OpenAsync();
+
+        await using var command = new NpgsqlCommand("SELECT pg_advisory_lock(918273645)", connection);
+
+        await command.ExecuteNonQueryAsync();
+
+        return connection;
+    }
+
+    private static async Task ReleaseEnvelopeInsertAsync(NpgsqlConnection connection)
+    {
+        await using var command = new NpgsqlCommand("SELECT pg_advisory_unlock(918273645)", connection);
+
+        await command.ExecuteNonQueryAsync();
+
+        await connection.DisposeAsync();
     }
 
     private TestServer Server()

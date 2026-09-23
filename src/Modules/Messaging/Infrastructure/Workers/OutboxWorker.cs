@@ -48,9 +48,12 @@ public sealed class OutboxWorker(
     }
 
     /// <summary>
-    /// Runs one bounded poll: claim a batch, send every claimed message, record every outcome.
-    /// The hosted service is the only production caller; the persistence suite drives a single poll
-    /// directly instead of racing its own polling loop.
+    /// Runs one bounded poll: claim one due message, send it, record its outcome, and repeat while the
+    /// batch budget lasts. Claiming immediately before the send keeps the lease that authorizes an
+    /// external attempt fresh, so no send can ever begin on a lease that expired while an earlier
+    /// reply of the same poll was still in flight and that another worker could already have
+    /// reclaimed. The hosted service is the only production caller; the persistence suite drives a
+    /// single poll directly instead of racing its own polling loop.
     /// </summary>
     internal async Task<int> ProcessOnceAsync(CancellationToken cancellationToken = default)
     {
@@ -63,14 +66,22 @@ public sealed class OutboxWorker(
 
         var sender = scope.ServiceProvider.GetRequiredService<IOutboundMessageSender>();
         var store = scope.ServiceProvider.GetRequiredService<IOutboxMessageStore>();
-        var claimed = await store.ClaimAsync(options.OutboxBatchSize, cancellationToken);
+        var processed = 0;
 
-        foreach (var message in claimed)
+        while (processed < options.OutboxBatchSize)
         {
-            await SendAsync(store, sender, message, cancellationToken);
+            var claimed = await store.ClaimAsync(1, cancellationToken);
+
+            if (claimed.Count == 0)
+            {
+                break;
+            }
+
+            await SendAsync(store, sender, claimed[0], cancellationToken);
+            processed++;
         }
 
-        return claimed.Count;
+        return processed;
     }
 
     private async Task<int> PollAsync(CancellationToken stoppingToken)
@@ -127,7 +138,8 @@ public sealed class OutboxWorker(
             await RecordFailureAsync(
                 store,
                 message,
-                $"Unknown provider outcome: {exception.Message}");
+                MessagingDiagnostics.UnexpectedOutboundFailure(exception),
+                exception);
 
             return;
         }
@@ -200,6 +212,7 @@ public sealed class OutboxWorker(
         IOutboxMessageStore store,
         ClaimedOutboxMessage message,
         string error,
+        Exception? exception = null,
         bool terminal = false,
         TimeSpan? retryDelay = null)
     {
@@ -215,10 +228,10 @@ public sealed class OutboxWorker(
                 retryDelay,
                 CancellationToken.None);
         }
-        catch (ClaimOwnershipLostException exception)
+        catch (ClaimOwnershipLostException lostClaim)
         {
             logger.LogWarning(
-                exception,
+                lostClaim,
                 "Outbox message {OutboxMessageId} is no longer claimed by this worker, so its failure "
                 + "was not recorded.",
                 message.Id);
@@ -226,7 +239,10 @@ public sealed class OutboxWorker(
             return;
         }
 
+        // The durable text stays a stable bounded classification, while the exception itself is only
+        // ever logged, so an operator keeps the detail without an uncontrolled string in the queue.
         logger.LogWarning(
+            exception,
             "Outbox message {OutboxMessageId} failed on attempt {Attempts} of {MaxAttempts}: {Outcome} ({Error}).",
             message.Id,
             message.Attempts,
@@ -240,7 +256,7 @@ public sealed class OutboxWorker(
         {
             OutboundSendOutcome.RetryableFailure => "The provider reported a retryable failure.",
             OutboundSendOutcome.PermanentFailure => "The provider reported a permanent failure.",
-            OutboundSendOutcome.Unknown => "Unknown provider outcome: acceptance could not be established.",
+            OutboundSendOutcome.Unknown => MessagingDiagnostics.AcceptanceNotEstablished,
             _ => "The outbound send did not complete.",
         };
 }

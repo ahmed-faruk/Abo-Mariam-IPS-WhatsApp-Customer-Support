@@ -187,6 +187,60 @@ public sealed class MetaWebhookContractTests
         Assert.Empty(queue.Envelopes);
     }
 
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("""{"entry":"not-an-array"}""")]
+    [InlineData("""{"entry":[[]]}""")]
+    [InlineData("""{"entry":[{"changes":{}}]}""")]
+    [InlineData("""{"entry":[{"changes":[{"value":[]}]}]}""")]
+    [InlineData("""{"entry":[{"changes":[{"value":{"messages":{}}}]}]}""")]
+    [InlineData("""{"entry":[{"changes":[{"value":{"messages":[[]]}}]}]}""")]
+    public async Task Structurally_invalid_payloads_are_rejected_with_400(string body)
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
+    }
+
+    [Theory]
+    [InlineData("\"a string document\"")]
+    [InlineData("17")]
+    public async Task A_non_object_document_is_rejected_with_400(string body)
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
+    }
+
+    [Theory]
+    [InlineData("not-a-timestamp")]
+    [InlineData("253402300800")]
+    [InlineData("-1")]
+    public async Task An_unusable_provider_timestamp_is_rejected_with_400(string timestamp)
+    {
+        var queue = new CapturingInboundQueue();
+        using var server = Server(queue);
+        var body = MessagePayload(
+            "{\"from\":\"20100000008\",\"id\":\"wamid.8\",\"timestamp\":\"" + timestamp
+            + "\",\"type\":\"text\",\"text\":{\"body\":\"hello\"}}");
+        using var request = SignedRequest(body);
+
+        var response = await server.CreateClient().SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(queue.Envelopes);
+    }
+
     [Fact]
     public async Task Persistence_failure_prevents_http_200_after_the_successful_prefix()
     {

@@ -16,6 +16,12 @@ public static class WhatsAppWebhookEndpoints
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly HashSet<string> IgnoredMessageTypes = ["system"];
 
+    /// <summary>
+    /// The largest Unix second a <see cref="DateTimeOffset"/> can represent, so no provider timestamp
+    /// in a payload can overflow the conversion that turns it into a stored instant.
+    /// </summary>
+    private static readonly long MaxUnixSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
     public static IEndpointRouteBuilder MapWhatsAppWebhookEndpoints(this IEndpointRouteBuilder endpoints)
     {
         ArgumentNullException.ThrowIfNull(endpoints);
@@ -185,6 +191,11 @@ public static class WhatsAppWebhookEndpoints
         using var document = JsonDocument.Parse(rawBody);
         var root = document.RootElement;
 
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            throw new FormatException("The Meta payload must be a JSON object.");
+        }
+
         if (!root.TryGetProperty("entry", out var entries) || entries.ValueKind != JsonValueKind.Array)
         {
             throw new FormatException("The Meta payload must contain entry[].");
@@ -199,9 +210,14 @@ public static class WhatsAppWebhookEndpoints
                 throw new FormatException("The Meta entry item must be an object.");
             }
 
-            if (!entry.TryGetProperty("changes", out var changes) || changes.ValueKind != JsonValueKind.Array)
+            if (!entry.TryGetProperty("changes", out var changes))
             {
                 continue;
+            }
+
+            if (changes.ValueKind != JsonValueKind.Array)
+            {
+                throw new FormatException("The Meta changes property must be an array.");
             }
 
             foreach (var change in changes.EnumerateArray())
@@ -211,9 +227,14 @@ public static class WhatsAppWebhookEndpoints
                     throw new FormatException("The Meta change item must be an object.");
                 }
 
-                if (!change.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.Object)
+                if (!change.TryGetProperty("value", out var value))
                 {
                     continue;
+                }
+
+                if (value.ValueKind != JsonValueKind.Object)
+                {
+                    throw new FormatException("The Meta change value must be an object.");
                 }
 
                 if (!value.TryGetProperty("messages", out var messageElements))
@@ -282,9 +303,11 @@ public static class WhatsAppWebhookEndpoints
         var timestamp = RequiredString(message, "timestamp");
 
         if (!long.TryParse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture, out var unixSeconds)
-            || unixSeconds < 0)
+            || unixSeconds < 0
+            || unixSeconds > MaxUnixSeconds)
         {
-            throw new FormatException("The Meta message timestamp must be a non-negative Unix timestamp.");
+            throw new FormatException(
+                "The Meta message timestamp must be a Unix timestamp inside the supported range.");
         }
 
         return DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime;
