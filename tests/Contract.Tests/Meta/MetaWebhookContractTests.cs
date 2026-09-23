@@ -217,6 +217,8 @@ public sealed class MetaWebhookContractTests
     [InlineData("{\"messages\":[%MESSAGE%]}")]
     [InlineData("{\"metadata\":\"not-an-object\",\"messages\":[%MESSAGE%]}")]
     [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\"},\"messages\":[%MESSAGE%]}")]
+    [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":123},\"messages\":[%MESSAGE%]}")]
+    [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":\"\"},\"messages\":[%MESSAGE%]}")]
     [InlineData("{\"metadata\":{\"display_phone_number\":\"15550001111\",\"phone_number_id\":\"  \"},\"messages\":[%MESSAGE%]}")]
     public async Task A_message_collection_that_cannot_name_its_receiving_number_is_rejected_with_400(
         string valueTemplate)
@@ -314,7 +316,9 @@ public sealed class MetaWebhookContractTests
     [InlineData("""{"entry":[{"changes":{}}]}""")]
     [InlineData("""{"entry":[{"changes":[{"value":[]}]}]}""")]
     [InlineData("""{"entry":[{"changes":[{"value":{"messages":{}}}]}]}""")]
-    [InlineData("""{"entry":[{"changes":[{"value":{"messages":[[]]}}]}]}""")]
+    // The message-item case carries the configured routing number, so it passes the phone-number guard
+    // and reaches the guard that rejects a non-object item inside messages[] itself.
+    [InlineData("""{"entry":[{"changes":[{"value":{"metadata":{"display_phone_number":"15550001111","phone_number_id":"123"},"messages":[[]]}}]}]}""")]
     public async Task Structurally_invalid_payloads_are_rejected_with_400(string body)
     {
         var queue = new CapturingInboundQueue();
