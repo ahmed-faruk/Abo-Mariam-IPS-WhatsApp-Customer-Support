@@ -9,11 +9,29 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure.Workers;
 /// Drains the durable Outbox queue. It only claims work when a sender is registered, so the
 /// application runs normally before the Meta transport exists and nothing is stranded.
 /// </summary>
-public sealed class OutboxWorker(
-    IServiceScopeFactory scopeFactory,
-    MessagingQueueOptions options,
-    ILogger<OutboxWorker> logger) : BackgroundService
+public sealed class OutboxWorker : BackgroundService
 {
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly MessagingQueueOptions options;
+    private readonly MessagingTimingPolicy timing;
+    private readonly ILogger<OutboxWorker> logger;
+
+    /// <summary>
+    /// The timing policy stays module-internal, so the worker is composed by the module's own
+    /// registration instead of by a public constructor signature.
+    /// </summary>
+    internal OutboxWorker(
+        IServiceScopeFactory scopeFactory,
+        MessagingQueueOptions options,
+        MessagingTimingPolicy timing,
+        ILogger<OutboxWorker> logger)
+    {
+        this.scopeFactory = scopeFactory;
+        this.options = options;
+        this.timing = timing;
+        this.logger = logger;
+    }
+
     /// <summary>
     /// How often the accepted delivery of a successful send is offered to the Outbox store again
     /// before the worker gives up and lets the claim lease recover it.
@@ -70,14 +88,39 @@ public sealed class OutboxWorker(
 
         while (processed < options.OutboxBatchSize)
         {
-            var claimed = await store.ClaimAsync(1, cancellationToken);
+            // The hard lease guard starts here, immediately before the claim. The database lease
+            // cannot start earlier than this moment, so this local deadline always expires before the
+            // lease can be recovered, and every step below - claim, send, completion, failure - is
+            // stopped by it. The guard is relative elapsed time, never a clock comparison with
+            // PostgreSQL, so it needs no synchronization with the database clock.
+            using var lease = new CancellationTokenSource();
+            lease.CancelAfter(timing.LeaseSafetyDeadline(options.ClaimLeaseDuration));
+
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Token);
+
+            IReadOnlyList<ClaimedOutboxMessage> claimed;
+
+            try
+            {
+                claimed = await store.ClaimAsync(1, attempt.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // The claim itself consumed the lease-safe budget, so no send may begin under this
+                // poll's remaining time. The work stays durable and the next poll claims it fresh.
+                logger.LogWarning(
+                    "The Outbox poll stopped before claiming: the claim did not finish inside the "
+                    + "lease safety deadline. The work stays durable and unclaimed.");
+
+                break;
+            }
 
             if (claimed.Count == 0)
             {
                 break;
             }
 
-            await SendAsync(store, sender, claimed[0], cancellationToken);
+            await SendAsync(store, sender, claimed[0], lease.Token, cancellationToken);
             processed++;
         }
 
@@ -120,18 +163,37 @@ public sealed class OutboxWorker(
         IOutboxMessageStore store,
         IOutboundMessageSender sender,
         ClaimedOutboxMessage message,
-        CancellationToken cancellationToken)
+        CancellationToken leaseToken,
+        CancellationToken hostToken)
     {
         OutboundSendResult result;
 
+        // The attempt ends at whichever comes first: host shutdown, the configured Meta timeout
+        // inside the sender, or this claim's lease-safety deadline.
+        using var attempt = CancellationTokenSource.CreateLinkedTokenSource(hostToken, leaseToken);
+
         try
         {
-            result = await sender.SendAsync(message, cancellationToken);
+            result = await sender.SendAsync(message, attempt.Token);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (hostToken.IsCancellationRequested)
         {
             // Shutdown is not a delivery failure: the claim stays held until its lease expires.
             throw;
+        }
+        catch (OperationCanceledException) when (leaseToken.IsCancellationRequested)
+        {
+            // The lease guard ended the attempt before the database lease became recoverable. A
+            // request that may already have left the process has an unknown outcome, so nothing is
+            // written under a claim that is about to be recoverable: the durable lease recovery
+            // records the ambiguity instead.
+            logger.LogWarning(
+                "The lease safety deadline of Outbox message {OutboxMessageId} ended the attempt before "
+                + "it reported an outcome. The provider outcome is unknown and the claim lease recovers "
+                + "the message.",
+                message.Id);
+
+            return;
         }
         catch (Exception exception)
         {
@@ -139,6 +201,7 @@ public sealed class OutboxWorker(
                 store,
                 message,
                 MessagingDiagnostics.UnexpectedOutboundFailure(exception),
+                leaseToken,
                 exception);
 
             return;
@@ -149,7 +212,7 @@ public sealed class OutboxWorker(
             // The provider accepted the delivery, so this attempt has left the transport. Only the
             // bookkeeping of the accepted delivery is left, and a failure there is never evidence that
             // the provider refused the message: reporting it as a failed send would deliver twice.
-            await RecordAcceptedDeliveryAsync(store, message, result.ProviderMessageId!);
+            await RecordAcceptedDeliveryAsync(store, message, result.ProviderMessageId!, leaseToken);
 
             return;
         }
@@ -158,6 +221,7 @@ public sealed class OutboxWorker(
             store,
             message,
             result.Error ?? ErrorFor(result.Outcome),
+            leaseToken,
             terminal: result.Outcome == OutboundSendOutcome.PermanentFailure,
             retryDelay: result.RetryAfter);
     }
@@ -165,15 +229,21 @@ public sealed class OutboxWorker(
     private async Task RecordAcceptedDeliveryAsync(
         IOutboxMessageStore store,
         ClaimedOutboxMessage message,
-        string providerMessageId)
+        string providerMessageId,
+        CancellationToken leaseToken)
     {
+        // A known provider acceptance must get a chance to be recorded even while the host is shutting
+        // down, so this token is deliberately not linked to host cancellation. It is still bounded:
+        // it honours the hard lease-safety deadline and one overall completion budget that every
+        // attempt below shares, so the bookkeeping can never outlive the claim it is recording.
+        using var bookkeeping = CancellationTokenSource.CreateLinkedTokenSource(leaseToken);
+        bookkeeping.CancelAfter(timing.CompletionBookkeepingBudget);
+
         for (var attempt = 1; attempt <= CompletionBookkeepingAttempts; attempt++)
         {
             try
             {
-                // The durable record of an accepted delivery must not be abandoned by a shutdown, so
-                // the completion is written with no cancellation token.
-                await store.CompleteAsync(message.Id, message.ClaimToken, providerMessageId, CancellationToken.None);
+                await store.CompleteAsync(message.Id, message.ClaimToken, providerMessageId, bookkeeping.Token);
 
                 return;
             }
@@ -184,6 +254,20 @@ public sealed class OutboxWorker(
                     "Outbox message {OutboxMessageId} is no longer claimed by this worker, so the accepted "
                     + "delivery was not recorded. A later retry may not be able to prove whether the "
                     + "provider already accepted this delivery.",
+                    message.Id);
+
+                return;
+            }
+            catch (OperationCanceledException) when (bookkeeping.Token.IsCancellationRequested)
+            {
+                // The budget or the lease-safety deadline ended the bookkeeping. The delivery is not
+                // sent again by this worker: its claim lease recovers the message, and a later retry
+                // may no longer be able to prove that Meta already accepted it.
+                logger.LogWarning(
+                    "The completion bookkeeping budget of Outbox message {OutboxMessageId} ended before "
+                    + "the accepted delivery could be recorded. The message is not sent again here; its "
+                    + "claim lease recovers it, and a later retry may duplicate externally because the "
+                    + "provider acceptance could not be stored.",
                     message.Id);
 
                 return;
@@ -212,6 +296,7 @@ public sealed class OutboxWorker(
         IOutboxMessageStore store,
         ClaimedOutboxMessage message,
         string error,
+        CancellationToken leaseToken,
         Exception? exception = null,
         bool terminal = false,
         TimeSpan? retryDelay = null)
@@ -220,13 +305,15 @@ public sealed class OutboxWorker(
 
         try
         {
+            // The failure is written under the same lease-safety deadline as the attempt it reports:
+            // an expired guard must not let this worker mutate a claim a newer owner may hold now.
             outcome = await store.FailAsync(
                 message.Id,
                 message.ClaimToken,
                 error,
                 terminal,
                 retryDelay,
-                CancellationToken.None);
+                leaseToken);
         }
         catch (ClaimOwnershipLostException lostClaim)
         {
@@ -234,6 +321,15 @@ public sealed class OutboxWorker(
                 lostClaim,
                 "Outbox message {OutboxMessageId} is no longer claimed by this worker, so its failure "
                 + "was not recorded.",
+                message.Id);
+
+            return;
+        }
+        catch (OperationCanceledException) when (leaseToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "The lease safety deadline of Outbox message {OutboxMessageId} ended before its failure "
+                + "could be recorded. The claim lease recovers the message.",
                 message.Id);
 
             return;

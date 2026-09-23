@@ -8,7 +8,7 @@ namespace WhatsAppMonitorAssistant.Modules.Messaging.Endpoints;
 /// whose <c>X-Hub-Signature-256</c> has already been verified, so traffic that cannot prove it came
 /// from Meta can never consume the permits a genuine callback needs. It lives with the webhook
 /// transport that uses it, and it is one fixed window in the process, which is the built-in
-/// mechanism of docs/TECHNICAL.md section 24 that needs no external store.
+/// mechanism of docs/TECHNICAL.md section 19 that needs no external store.
 /// </summary>
 internal sealed class WhatsAppWebhookDeliveryLimiter : IDisposable
 {

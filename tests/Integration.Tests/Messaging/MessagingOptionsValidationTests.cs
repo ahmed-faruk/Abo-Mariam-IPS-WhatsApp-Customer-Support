@@ -36,6 +36,12 @@ public sealed class MessagingOptionsValidationTests
             (nameof(MessagingQueueOptions.OutboxRetryDelay), options => options.OutboxRetryDelay = TimeSpan.FromHours(2)),
             (nameof(MessagingQueueOptions.ClaimLeaseDuration), options => options.ClaimLeaseDuration = TimeSpan.Zero),
             (nameof(MessagingQueueOptions.ClaimLeaseDuration), options => options.ClaimLeaseDuration = TimeSpan.FromSeconds(-1)),
+            // The lease guard is the claim lease minus the lease-safety slack, so a lease that short
+            // leaves no guard at all and is rejected instead of running without one.
+            (nameof(MessagingQueueOptions.ClaimLeaseDuration), options => options.ClaimLeaseDuration = TimeSpan.FromSeconds(5)),
+            // The guard is a scheduled cancellation, so a lease beyond the schedulable ceiling cannot
+            // produce a guard either.
+            (nameof(MessagingQueueOptions.ClaimLeaseDuration), options => options.ClaimLeaseDuration = TimeSpan.FromDays(60)),
             (nameof(MessagingQueueOptions.IdlePollDelay), options => options.IdlePollDelay = TimeSpan.Zero),
             (nameof(MessagingQueueOptions.IdlePollDelay), options => options.IdlePollDelay = TimeSpan.FromSeconds(-1)),
         ];
@@ -98,10 +104,16 @@ public sealed class MessagingOptionsValidationTests
         Assert.True(options.TimeoutSeconds > 0);
     }
 
+    /// <summary>
+    /// With the default five-minute lease the worker needs 35 seconds of enforced budget that is not
+    /// the provider attempt: one bounded queue command, the shared completion-bookkeeping budget and
+    /// the lease-safety slack. A provider timeout at or above 265 seconds therefore cannot fit.
+    /// </summary>
     [Theory]
     [InlineData(300)]
     [InlineData(301)]
     [InlineData(270)]
+    [InlineData(265)]
     public void A_transport_budget_that_cannot_finish_inside_the_claim_lease_is_rejected(int timeoutSeconds)
     {
         using var provider = BuildTransportProvider(
@@ -119,9 +131,9 @@ public sealed class MessagingOptionsValidationTests
     {
         using var provider = BuildTransportProvider(
             queue => queue.ClaimLeaseDuration = TimeSpan.FromMinutes(5),
-            whatsApp => whatsApp.TimeoutSeconds = 269);
+            whatsApp => whatsApp.TimeoutSeconds = 264);
 
-        Assert.Equal(269, ResolveWhatsAppOptions(provider).TimeoutSeconds);
+        Assert.Equal(264, ResolveWhatsAppOptions(provider).TimeoutSeconds);
     }
 
     [Fact]

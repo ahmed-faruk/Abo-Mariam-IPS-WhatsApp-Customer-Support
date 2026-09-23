@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 using WhatsAppMonitorAssistant.Modules.Messaging.Endpoints;
@@ -80,6 +81,10 @@ public static class MessagingModuleRegistration
         // An invalid policy is rejected at startup, so no worker can ever poll in a failure loop.
         queueOptions.ValidateOnStart();
 
+        // The workers, the stores and the startup validators all read this one instance, so the
+        // budgets a configuration is checked against are the budgets production actually enforces.
+        services.AddSingleton(MessagingTimingPolicy.Default);
+
         // The workers and the stores read one validated instance of the queue policy.
         services.AddSingleton(provider => provider.GetRequiredService<IOptions<MessagingQueueOptions>>().Value);
 
@@ -91,7 +96,11 @@ public static class MessagingModuleRegistration
         // The workers stay idle until a processor or a sender is registered by a later ticket.
         // Each one is a single instance, resolvable for tests and health checks, and started by the host.
         services.AddSingleton<InboxWorker>();
-        services.AddSingleton<OutboxWorker>();
+        services.AddSingleton(provider => new OutboxWorker(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessagingQueueOptions>(),
+            provider.GetRequiredService<MessagingTimingPolicy>(),
+            provider.GetRequiredService<ILogger<OutboxWorker>>()));
         services.AddHostedService(provider => provider.GetRequiredService<InboxWorker>());
         services.AddHostedService(provider => provider.GetRequiredService<OutboxWorker>());
     }

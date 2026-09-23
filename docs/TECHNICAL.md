@@ -829,6 +829,12 @@ The accepted row is what the customer's turn produced, so a retry of its inbound
 that same durable reply instead of rendering another one, and the transport retry of the accepted row
 keeps its place in the durable Outbox exactly as any other durable intent does.
 
+That transport retry is still bounded: the durable row keeps the Outbox attempt limit and the
+retry-delay ceiling of section 15, so a delivery that keeps failing dead-letters instead of retrying
+forever. A free-form message the provider itself refuses as no longer allowed outside the window - the
+re-engagement error the adapter classifies as permanent, currently 131047 - terminates on that attempt
+instead of being retried.
+
 Lean demo contains no proactive template workflow. If closed:
 
 - do not send free-form;

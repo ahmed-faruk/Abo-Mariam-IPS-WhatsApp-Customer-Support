@@ -93,11 +93,15 @@ The Messaging module reads Meta WhatsApp settings from the `WhatsApp` section.
 
 Real secrets belong in user-secrets or environment variables, never in committed configuration.
 
-`WhatsApp:TimeoutSeconds` is bounded by a policy the operator must respect when raising it:
-`Host.Web` refuses to start unless the complete outbound attempt plus its completion-bookkeeping margin
-stays strictly inside the Outbox claim lease. A lease that expires while an attempt is still in flight
-would let another replica recover and send the same message again, so an over-long timeout fails
-startup instead of being silently capped.
+`WhatsApp:TimeoutSeconds` is constrained by the Outbox claim lease the worker runs under. The worker
+starts a local lease-safety deadline immediately before it claims a message, and that deadline bounds
+the claim itself, the Meta attempt, the accepted-delivery bookkeeping and the failure bookkeeping, so
+the worker stops acting under a claim before any other replica may recover it. Completion bookkeeping
+is bounded by one budget shared across its retries, and every durable queue command carries an explicit
+finite command timeout rather than inheriting the connection string's `Command Timeout`. `Host.Web`
+refuses to start when the configured timeout plus those enforced budgets cannot fit inside the lease;
+an over-long timeout is never silently capped. The worker budgets behind this invariant are internal
+policy, not user settings.
 
 ```bash
 dotnet user-secrets set "WhatsApp:ApiVersion" "<graph-version>" --project src/Host.Web

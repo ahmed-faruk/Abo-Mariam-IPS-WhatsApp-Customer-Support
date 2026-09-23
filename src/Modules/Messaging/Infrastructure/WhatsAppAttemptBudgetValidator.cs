@@ -4,40 +4,44 @@ using WhatsAppMonitorAssistant.Modules.Messaging.Contracts;
 namespace WhatsAppMonitorAssistant.Modules.Messaging.Infrastructure;
 
 /// <summary>
-/// Rejects a transport attempt budget that cannot finish inside the Outbox claim lease. The Outbox
-/// worker claims a message immediately before it sends it, so the claim that authorizes one provider
-/// attempt must stay valid for the whole attempt: a lease that expires mid-attempt lets another
-/// replica recover the same message and send it a second time while the first request may still be
-/// accepted by Meta, which is exactly the duplicate docs/TECHNICAL.md section 14 rules out.
+/// Rejects a configuration whose enforced budgets cannot fit inside the Outbox claim lease. The
+/// Outbox worker claims a message immediately before it sends it, so the claim that authorizes one
+/// provider attempt must stay valid for the whole attempt: a lease that expires mid-attempt lets
+/// another replica recover the same message and send it a second time while the first request may
+/// still be accepted by Meta, which is exactly the duplicate docs/TECHNICAL.md section 15 rules out
+/// for horizontally safe workers.
 /// </summary>
-internal sealed class WhatsAppAttemptBudgetValidator(IOptions<MessagingQueueOptions> queue)
-    : IValidateOptions<WhatsAppOptions>
+/// <remarks>
+/// This validator is the configuration sanity gate, not the safety mechanism. The hard mechanism is
+/// the worker's own lease guard, which is started before the claim and ends the attempt, the
+/// completion bookkeeping and the failure bookkeeping before the database lease can be recovered.
+/// The validator only ensures that a normal configured operation - one bounded queue command, the
+/// whole provider attempt, the shared completion-bookkeeping budget and the lease-safety slack -
+/// fits inside the lease, and the constants it uses are the ones the workers actually enforce.
+/// </remarks>
+internal sealed class WhatsAppAttemptBudgetValidator(
+    IOptions<MessagingQueueOptions> queue,
+    MessagingTimingPolicy timing) : IValidateOptions<WhatsAppOptions>
 {
-    /// <summary>
-    /// The room kept between the end of one provider attempt and the expiry of the claim that
-    /// authorized it. It covers the bounded completion bookkeeping the Outbox worker performs after a
-    /// successful send - a small, fixed number of store writes with no artificial delay of their own -
-    /// so the duration of those writes is bounded by the database rather than by configuration, and
-    /// this policy names the separation instead of leaving it to whatever the database happens to do.
-    /// </summary>
-    internal static readonly TimeSpan CompletionBookkeepingSafetyMargin = TimeSpan.FromSeconds(30);
-
     public ValidateOptionsResult Validate(string? name, WhatsAppOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timing);
 
-        var attempt = TimeSpan.FromSeconds(options.TimeoutSeconds) + CompletionBookkeepingSafetyMargin;
+        var required = timing.RequiredClaimLease(options.TimeoutSeconds);
         var lease = queue.Value.ClaimLeaseDuration;
 
-        if (lease > attempt)
+        if (lease > required)
         {
             return ValidateOptionsResult.Success;
         }
 
         return ValidateOptionsResult.Fail(
-            $"The WhatsApp setting '{nameof(WhatsAppOptions.TimeoutSeconds)}' must leave room for its "
-            + $"completion bookkeeping inside the messaging queue setting "
-            + $"'{nameof(MessagingQueueOptions.ClaimLeaseDuration)}': the complete outbound attempt "
-            + $"({attempt}) must stay strictly shorter than the claim lease ({lease}).");
+            $"The WhatsApp setting '{nameof(WhatsAppOptions.TimeoutSeconds)}' does not fit inside the "
+            + $"messaging queue setting '{nameof(MessagingQueueOptions.ClaimLeaseDuration)}': the worker "
+            + $"needs a claim lease longer than {required} - one bounded queue command "
+            + $"({timing.DatabaseCommandTimeout}), the whole Meta attempt, the shared completion "
+            + $"bookkeeping budget ({timing.CompletionBookkeepingBudget}) and the lease-safety slack "
+            + $"({timing.LeaseSafetySlack}) - but the configured lease is {lease}.");
     }
 }
