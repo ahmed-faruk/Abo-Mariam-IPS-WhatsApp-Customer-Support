@@ -570,6 +570,63 @@ Do not judge first-turn cold-load time as normal warm response time.
 
 ---
 
+## 8.5 Deterministic explicit-fact normalization (Controlled Demo)
+
+```text
+schema-valid Ollama interpretation (§8.3, after the one corrective retry)
+→ bounded deterministic normalization of explicit customer-stated facts
+→ interpretation returned through IAiNluClient
+```
+
+The Controlled Client Demo Fast Track runs this bounded guardrail after a schema-valid reply and
+before the result leaves `IAiNluClient`, so the demo criteria do not depend on which of two
+schema-valid parses the small model happened to produce. It may enforce only facts the customer
+explicitly stated in the current text:
+
+- a whole-token Dell alias (`Dell`, `dell`, `ديل`) → `brand = "Dell"`;
+- a whole explicit panel token (`IPS`, `TN`, `VA`, `OLED`) → `panel` in canonical upper case;
+- a standalone monitor size inside the section 6.1 range (10–60 inches) with positive evidence, and
+  only when the number belongs to no other role (budget phrase, resolution, refresh rate, model code,
+  warranty period, opening hours, quantity or price);
+- the documented Soft/Hard phrase families (`في حدود`, `حوالي` / `مش عايز أعدي`, `بحد أقصى`,
+  `أقصى حاجة`, `مايزدش عن`) bound structurally to the one numeric token that follows the phrase, with
+  a budget-only turn routed to `ProductSearch`;
+- the explicit shop-hours questions (`مواعيدكم`, `مواعيد العمل`, `مواعيد الشغل`, `بتفتحوا امتى؟`,
+  `فاتحين امتى؟`) → `BusinessInfo`.
+- a schema-valid `ProductDetails` interpretation that identifies no specific product — `modelCode`
+  and `reference` both empty — and states at least one existing catalogue-search constraint
+  (`brand`, `sizeInches`, `panel`, `resolution`, `minRefreshRate`, a non-empty `requiredPorts` or
+  `grades`, `useCase`, or a valid budget) → `ProductSearch`. This rule is structural over the frozen
+  output schema: it matches no utterance, changes no other intent, invents no commercial fact, and
+  changes neither reference semantics nor the frozen model, prompt, schema or request shape.
+
+Any ambiguity keeps the model's own value: the guardrail never guesses and it never turns one number
+into another number's role. When a phrase family is established, the number the customer's phrase owns
+is authoritative over a conflicting model value — `مش عايز أعدي 2500` is a Hard ceiling of exactly
+2500 even when the model returned another number or another budget shape — and no path ever raises a
+ceiling above the number the customer stated. It runs only on a schema-valid success — `Timeout`,
+`AiUnavailable`, `InvalidModelOutput` and a caller cancellation are returned exactly as before — and
+it triggers no additional Ollama request. It never produces a commercial fact (price, quantity,
+availability, warranty, specifications or Storefront values) and never normalizes the `reference`
+field, which Conversations owns.
+
+`docs/demo/DEMO-CRITICAL-GATE-v1.md` is unchanged: the gate still accepts the frozen Controlled Demo
+Candidate of section 8.2, whose request shape, model, prompt and schema do not change, and its
+preconditions and scenarios apply to the pipeline documented here.
+
+Unchanged by this step:
+
+```text
+§8.2 request shape (stream false, think false, temperature 0, num_ctx 4096) — unchanged
+nlu-system-prompt-v3, PromptSha256 2139120c08b3ad01a5389f986ae6a4a7e884da372591a951a6efaea225237d3a — unchanged
+nlu-output-v1, SchemaSha256 fb9eacee28dcf31f6438fbe63092a8b48abb42cf5c592f4edd06874b2f1d4302 — unchanged
+model qwen3.5:2b-q4_K_M — unchanged
+Demo-Critical Gate v1 utterances — unchanged
+Issue #8 historical benchmark evidence (62.3 % intent, FAIL) — unchanged
+```
+
+---
+
 # 9. Intent routing
 
 ```text
@@ -727,6 +784,13 @@ State is UX context only. Commercial facts are always reloaded.
 The document is short-lived: one sliding time to live of exactly **30 minutes**, refreshed on every
 successful write, and the whole document expires together. Expired or malformed state is read as empty
 and is replaced by the next successful write.
+
+When a non-null model reference does not resolve against the stored state — an unknown phrase, or an
+allowlisted phrase whose target the state cannot answer — Conversations may recover it from the
+original customer text: only existing allowlisted aliases, whole-token and whole-phrase matching, no
+substring and no fuzzy matching. Exactly one distinct allowlisted target is then resolved against the
+stored state, which may itself still be unresolved by the state's own rules; zero or several targets
+keep the original resolution. The allowlist itself is unchanged and the customer text is not stored.
 
 ---
 

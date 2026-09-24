@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 
 /// <summary>Which part of the stored UX context a follow-up reference points at.</summary>
@@ -119,17 +121,42 @@ public static class ConversationReferences
             ? null
             : Aliases.FirstOrDefault(candidate => string.Equals(candidate.NormalizedText, normalized, StringComparison.Ordinal));
 
-        if (alias is null)
+        return alias is null
+            ? ConversationReferenceResolution.Unresolved(ConversationReferenceReasons.UnresolvedReference)
+            : ResolveTarget(alias.Target, state);
+    }
+
+    /// <summary>
+    /// Resolves a model-produced reference with one bounded recovery step. When the reference is not an
+    /// allowlisted alias at all, the original customer text is searched for <em>existing</em> aliases
+    /// with whole-token and whole-phrase matching: exactly one distinct allowlisted target resolves
+    /// against the stored state, zero or several targets keep the original resolution. Whenever normal
+    /// resolution fails for any reason, the text may name the product instead — a model reference that
+    /// is allowlisted but whose target the stored state cannot answer is exactly such a case. There is
+    /// no fuzzy matching, no substring matching, no new alias, and the text is not stored.
+    /// </summary>
+    public static ConversationReferenceResolution ResolveWithCustomerText(
+        string? reference,
+        string? customerText,
+        ConversationStateDocument state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        var resolution = Resolve(reference, state);
+
+        if (resolution.IsResolved || Normalize(reference) is null)
         {
-            return ConversationReferenceResolution.Unresolved(ConversationReferenceReasons.UnresolvedReference);
+            return resolution;
         }
 
-        return alias.Target switch
-        {
-            ConversationReferenceTarget.First => Position(state, 0),
-            ConversationReferenceTarget.Second => Position(state, 1),
-            _ => Current(state),
-        };
+        var tokens = Tokens(customerText);
+        var targets = Aliases
+            .Where(alias => ContainsAlias(tokens, alias))
+            .Select(alias => alias.Target)
+            .Distinct()
+            .ToList();
+
+        return targets.Count == 1 ? ResolveTarget(targets[0], state) : resolution;
     }
 
     /// <summary>
@@ -148,6 +175,98 @@ public static class ConversationReferences
 
         return string.Join(' ', parts).ToLowerInvariant();
     }
+
+    private static ConversationReferenceResolution ResolveTarget(
+        ConversationReferenceTarget target,
+        ConversationStateDocument state) =>
+        target switch
+        {
+            ConversationReferenceTarget.First => Position(state, 0),
+            ConversationReferenceTarget.Second => Position(state, 1),
+            _ => Current(state),
+        };
+
+    /// <summary>
+    /// The token form of a customer message for alias matching: split on whitespace and punctuation and
+    /// lowercased, so <c>دي</c> can never match inside <c>ديل</c>. It is a matching rule only and cannot
+    /// widen the allowlist.
+    /// </summary>
+    private static IReadOnlyList<string> Tokens(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return [];
+        }
+
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+
+        foreach (var character in text)
+        {
+            if (char.IsWhiteSpace(character) || char.IsPunctuation(character) || char.IsSymbol(character))
+            {
+                if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            current.Append(char.ToLowerInvariant(character));
+        }
+
+        if (current.Length > 0)
+        {
+            tokens.Add(current.ToString());
+        }
+
+        return tokens;
+    }
+
+    private static bool ContainsAlias(IReadOnlyList<string> tokens, ConversationReferenceAlias alias)
+    {
+        var words = alias.NormalizedText.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        for (var start = 0; start + words.Length <= tokens.Count; start++)
+        {
+            var matches = true;
+
+            for (var offset = 0; offset < words.Length; offset++)
+            {
+                var token = tokens[start + offset];
+                var expected = words[offset];
+
+                // One leading Arabic conjunction may be attached to the first word of an alias
+                // occurrence, so "والتانية" matches the existing alias "التانية" and "والديل…" matches
+                // the existing full Current phrase. The conjunction is never stripped from later words,
+                // it is never applied twice, and the allowlist itself stays unchanged.
+                if (offset == 0 && IsConjunctionPrefixed(token, expected))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(token, expected, StringComparison.Ordinal))
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsConjunctionPrefixed(string token, string expected) =>
+        token.Length == expected.Length + 1
+        && token[0] == 'و'
+        && token.AsSpan(1).SequenceEqual(expected);
 
     private static ConversationReferenceResolution Position(ConversationStateDocument state, int index)
     {

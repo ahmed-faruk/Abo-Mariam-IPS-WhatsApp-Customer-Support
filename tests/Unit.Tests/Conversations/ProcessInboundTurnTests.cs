@@ -1367,6 +1367,31 @@ public sealed class ProcessInboundTurnTests
     }
 
     [Fact]
+    public async Task A_paraphrased_reference_still_answers_about_the_current_product_through_the_whole_turn()
+    {
+        // The captured DEMO-07 flow of Issue #32: the frozen model paraphrases the reference, and the
+        // handler must still answer about the product the customer is talking about, resolved from the
+        // original turn body through the Conversations-owned recovery.
+        var harness = Harness.Start(NluAnalysisResult.Success(
+            ConversationSamples.Interpretation(NluIntent.AvailabilityCheck, reference: "the previous monitor")));
+        harness.Store.State = PreviouslyShown((5, 51), (6, 61));
+        harness.Details.Publish(ConversationSamples.ActiveModel(5, 51));
+        harness.Details.Publish(ConversationSamples.ActiveModel(6, 61));
+
+        var result = await harness.ProcessAsync(ConversationSamples.Text(
+            body: "الديل اللي قولتلي عليها لسه موجودة؟",
+            providerMessageId: "wamid.reference-recovery-1"));
+
+        var intent = Assert.Single(harness.Renderer.Intents);
+
+        Assert.Equal(ConversationResponseKind.Availability, intent.Kind);
+        Assert.Equal(5, intent.ModelId);
+        Assert.Equal(51, intent.VariantId);
+        Assert.Equal(ConversationTurnOutcome.ResponseEnqueued, result.Outcome);
+        Assert.Single(harness.Outbox.Requests);
+    }
+
+    [Fact]
     public async Task A_structurally_malformed_stored_state_never_breaks_the_turn()
     {
         var harness = Harness.Start(NluAnalysisResult.Success(

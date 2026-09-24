@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Infrastructure.Ollama;
+using ScriptedTransport = WhatsAppMonitorAssistant.Unit.Tests.Intelligence.ScriptedOllamaClient.ScriptedTransport;
 
 namespace WhatsAppMonitorAssistant.Unit.Tests.Intelligence;
 
@@ -240,36 +241,6 @@ public sealed class OllamaAiNluClientTests
         Assert.Equal(0, transport.Attempts);
     }
 
-    private static OllamaAiNluClient CreateClient(IOllamaChatTransport transport) => new(
-        transport,
-        new OllamaChatRequestBuilder(
-            new OllamaAiOptions
-            {
-                Provider = OllamaFrozenProfile.Provider,
-                BaseUrl = OllamaFrozenProfile.BaseUrl,
-                Model = OllamaFrozenProfile.Model,
-                TimeoutSeconds = OllamaFrozenProfile.TimeoutSeconds,
-                Temperature = OllamaFrozenProfile.Temperature,
-                ContextTokens = OllamaFrozenProfile.ContextTokens,
-            },
-            NluOutputSchema.Load()));
-
-    private sealed class ScriptedTransport(params OllamaChatTransportResult[] results) : IOllamaChatTransport
-    {
-        private readonly Queue<OllamaChatTransportResult> _results = new(results);
-
-        public List<JsonObject> Requests { get; } = [];
-
-        public int Attempts => Requests.Count;
-
-        public Task<OllamaChatTransportResult> SendAsync(
-            JsonObject request,
-            CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            Requests.Add(request);
-
-            return Task.FromResult(_results.Dequeue());
-        }
-    }
+    private static OllamaAiNluClient CreateClient(IOllamaChatTransport transport) =>
+        ScriptedOllamaClient.CreateClient(transport);
 }

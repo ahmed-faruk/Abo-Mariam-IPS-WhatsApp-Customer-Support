@@ -825,6 +825,11 @@ Pilot/Production acceptance. Promoting any AI configuration to Pilot/Production 
 general benchmark gate above re-measured on the intended hosting environment and model
 configuration (section 19).
 
+For the Controlled Client Demo Fast Track the LLM performs language interpretation, while narrowly
+bounded deterministic normalization may enforce facts explicitly present in the customer's text
+(docs/TECHNICAL.md section 8.5). This authorizes no deterministic commercial fact and no second
+general-purpose NLU engine, and it does not change the frozen Controlled Demo Candidate.
+
 ## 13.4 Pre-warm rule
 
 Before client demo:

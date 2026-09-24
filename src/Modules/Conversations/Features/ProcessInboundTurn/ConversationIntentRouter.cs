@@ -53,6 +53,7 @@ internal sealed class ConversationIntentRouter(
                 conversationId,
                 customerExternalId,
                 interpretation,
+                body,
                 state,
                 ConversationResponseKind.ProductDetails,
                 cancellationToken),
@@ -60,6 +61,7 @@ internal sealed class ConversationIntentRouter(
                 conversationId,
                 customerExternalId,
                 interpretation,
+                body,
                 state,
                 ConversationResponseKind.Availability,
                 cancellationToken),
@@ -67,6 +69,7 @@ internal sealed class ConversationIntentRouter(
                 conversationId,
                 customerExternalId,
                 interpretation,
+                body,
                 state,
                 ConversationResponseKind.Price,
                 cancellationToken),
@@ -74,6 +77,7 @@ internal sealed class ConversationIntentRouter(
                 conversationId,
                 customerExternalId,
                 interpretation,
+                body,
                 state,
                 cancellationToken),
             NluIntent.BusinessInfo => BusinessInfo(conversationId, customerExternalId, body, state),
@@ -146,11 +150,13 @@ internal sealed class ConversationIntentRouter(
         long conversationId,
         string customerExternalId,
         NluInterpretation interpretation,
+        string? body,
         ConversationStateDocument state,
         ConversationResponseKind kind,
         CancellationToken cancellationToken)
     {
-        var (modelId, variantId, reasonCode) = await ResolveProductAsync(interpretation, state, cancellationToken);
+        var (modelId, variantId, reasonCode) =
+            await ResolveProductAsync(interpretation, body, state, cancellationToken);
 
         // An exact model code the catalogue does not currently hold is a deterministic no-match: the
         // customer named one specific product. A reference that could not be resolved is different —
@@ -211,12 +217,13 @@ internal sealed class ConversationIntentRouter(
         long conversationId,
         string customerExternalId,
         NluInterpretation interpretation,
+        string? body,
         ConversationStateDocument state,
         CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(interpretation.Reference))
         {
-            var resolution = ConversationReferences.Resolve(interpretation.Reference, state);
+            var resolution = ConversationReferences.ResolveWithCustomerText(interpretation.Reference, body, state);
 
             if (!resolution.IsResolved)
             {
@@ -429,6 +436,7 @@ internal sealed class ConversationIntentRouter(
 
     private async Task<(long? ModelId, long? VariantId, string? ReasonCode)> ResolveProductAsync(
         NluInterpretation interpretation,
+        string? body,
         ConversationStateDocument state,
         CancellationToken cancellationToken)
     {
@@ -443,7 +451,7 @@ internal sealed class ConversationIntentRouter(
 
         if (!string.IsNullOrWhiteSpace(interpretation.Reference))
         {
-            var resolution = ConversationReferences.Resolve(interpretation.Reference, state);
+            var resolution = ConversationReferences.ResolveWithCustomerText(interpretation.Reference, body, state);
 
             return resolution.IsResolved
                 ? (resolution.ModelId, resolution.VariantId, null)

@@ -46,7 +46,7 @@ public sealed class OllamaAiNluClient : IAiNluClient
 
         if (first.Validation is { IsValid: true, Interpretation: { } interpretation })
         {
-            return NluAnalysisResult.Success(interpretation);
+            return NluAnalysisResult.Success(NluDeterministicNormalizer.Normalize(message, interpretation));
         }
 
         var retry = await AttemptAsync(
@@ -60,7 +60,7 @@ public sealed class OllamaAiNluClient : IAiNluClient
         }
 
         return retry.Validation is { IsValid: true, Interpretation: { } retryInterpretation }
-            ? NluAnalysisResult.Success(retryInterpretation)
+            ? NluAnalysisResult.Success(NluDeterministicNormalizer.Normalize(message, retryInterpretation))
             : NluAnalysisResult.InvalidModelOutput(retry.Validation?.Problems ?? []);
     }
 
