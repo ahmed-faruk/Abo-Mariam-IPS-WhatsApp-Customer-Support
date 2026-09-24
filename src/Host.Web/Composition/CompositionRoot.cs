@@ -1,3 +1,4 @@
+using WhatsAppMonitorAssistant.Host.Web.Health;
 using WhatsAppMonitorAssistant.Modules.Catalog.Infrastructure;
 using WhatsAppMonitorAssistant.Modules.Catalog.Features.SearchProducts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Infrastructure;
@@ -64,6 +65,15 @@ public static class CompositionRoot
         // values and environment variables are documented in docs/CONFIGURATION.md.
         services.AddIntelligenceModule(options =>
             configuration.GetSection(OllamaAiOptions.ConfigurationSectionName).Bind(options));
+
+        services.AddHealthChecks()
+            .AddCheck(
+                "postgresql",
+                new PostgreSqlReadinessCheck(connectionString),
+                tags: ["ready"])
+            .AddCheck<OllamaModelReadinessCheck>(
+                "ollama-model",
+                tags: ["ready"]);
 
         return services;
     }

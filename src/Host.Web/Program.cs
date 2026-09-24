@@ -12,3 +12,7 @@ app.MapHealthEndpoints();
 app.MapWhatsAppWebhookEndpoints();
 
 await app.RunAsync();
+
+public partial class Program
+{
+}

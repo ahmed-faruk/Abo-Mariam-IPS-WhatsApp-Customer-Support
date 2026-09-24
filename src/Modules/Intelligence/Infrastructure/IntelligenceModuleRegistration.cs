@@ -30,6 +30,16 @@ public static class IntelligenceModuleRegistration
         services.AddSingleton(provider => provider.GetRequiredService<IOptions<OllamaAiOptions>>().Value);
         services.AddSingleton(NluOutputSchema.Load());
 
+        services.AddHttpClient(OllamaModelReadiness.HttpClientName, (provider, client) =>
+        {
+            var ai = provider.GetRequiredService<OllamaAiOptions>();
+            client.BaseAddress = new Uri(ai.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
+            client.Timeout = TimeSpan.FromSeconds(3);
+            client.MaxResponseContentBufferSize = 1024 * 1024;
+        });
+
+        services.AddScoped<IAiModelReadiness, OllamaModelReadiness>();
+
         services.AddHttpClient<OllamaChatTransport>((provider, client) =>
         {
             var ai = provider.GetRequiredService<OllamaAiOptions>();
