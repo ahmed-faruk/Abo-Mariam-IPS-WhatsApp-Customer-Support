@@ -683,6 +683,135 @@ public sealed class NluDeterministicNormalizationTests
         Assert.Null(result.Interpretation.SizeInches);
     }
 
+    [Fact]
+    public async Task A_stated_brand_normalized_by_the_guardrail_is_enough_for_a_ProductDetails_search()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "عايز ديل",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductDetails")));
+
+        Assert.Equal(NluIntent.ProductSearch, result.Interpretation!.Intent);
+        Assert.Equal("Dell", result.Interpretation.Brand);
+    }
+
+    [Fact]
+    public async Task A_stated_panel_normalized_by_the_guardrail_is_enough_for_a_ProductDetails_search()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "عايز IPS",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductDetails")));
+
+        Assert.Equal(NluIntent.ProductSearch, result.Interpretation!.Intent);
+        Assert.Equal("IPS", result.Interpretation.Panel);
+    }
+
+    [Fact]
+    public async Task A_stated_size_normalized_by_the_guardrail_is_enough_for_a_ProductDetails_search()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "عايز شاشة 24",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductDetails")));
+
+        Assert.Equal(NluIntent.ProductSearch, result.Interpretation!.Intent);
+        Assert.Equal(24, result.Interpretation.SizeInches);
+    }
+
+    [Theory]
+    [InlineData("brand")]
+    [InlineData("modelCode")]
+    [InlineData("size")]
+    [InlineData("panel")]
+    [InlineData("resolution")]
+    [InlineData("refresh")]
+    [InlineData("ports")]
+    [InlineData("grades")]
+    [InlineData("useCase")]
+    [InlineData("reference")]
+    [InlineData("budget")]
+    public async Task Shop_hours_do_not_override_any_structured_product_field(string field)
+    {
+        var reply = field switch
+        {
+            "brand" => ScriptedOllamaClient.Reply("PriceCheck", brand: "HP"),
+            "modelCode" => ScriptedOllamaClient.Reply("PriceCheck", modelCode: "P2419H"),
+            "size" => ScriptedOllamaClient.Reply("PriceCheck", sizeInches: 24),
+            "panel" => ScriptedOllamaClient.Reply("PriceCheck", panel: "TN"),
+            "resolution" => ScriptedOllamaClient.Reply("PriceCheck", resolution: "1920x1080"),
+            "refresh" => ScriptedOllamaClient.Reply("PriceCheck", minRefreshRate: 144),
+            "ports" => ScriptedOllamaClient.Reply("PriceCheck", requiredPorts: ["HDMI"]),
+            "grades" => ScriptedOllamaClient.Reply("PriceCheck", grades: ["A"]),
+            "useCase" => ScriptedOllamaClient.Reply("PriceCheck", useCase: "Gaming"),
+            "reference" => ScriptedOllamaClient.Reply("PriceCheck", reference: "first"),
+            _ => ScriptedOllamaClient.Reply("PriceCheck", budgetType: "Soft", budgetTarget: 3000),
+        };
+
+        var (result, _) = await AnalyzeAsync(
+            "مواعيدكم إيه؟",
+            OllamaChatTransportResult.ReplyReceived(reply));
+
+        Assert.Equal(NluIntent.PriceCheck, result.Interpretation!.Intent);
+    }
+
+    [Theory]
+    [InlineData("مش عايز ديل")]
+    [InlineData("مش عاوز ديل")]
+    [InlineData("مش محتاج ديل")]
+    [InlineData("لا ديل")]
+    public async Task A_negated_Dell_mention_is_not_a_stated_brand(string message)
+    {
+        var (result, _) = await AnalyzeAsync(
+            message,
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Brand);
+    }
+
+    [Theory]
+    [InlineData("مش عايز IPS")]
+    [InlineData("مش عاوز TN")]
+    [InlineData("مش محتاج VA")]
+    [InlineData("لا OLED")]
+    public async Task A_negated_panel_mention_is_not_a_stated_panel(string message)
+    {
+        var (result, _) = await AnalyzeAsync(
+            message,
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Panel);
+    }
+
+    [Theory]
+    [InlineData("ديل أو HP")]
+    [InlineData("HP أو ديل")]
+    [InlineData("ديل ولا HP")]
+    [InlineData("Dell or HP")]
+    public async Task A_Dell_mention_offered_as_an_alternative_is_not_forced(string message)
+    {
+        var (result, _) = await AnalyzeAsync(
+            message,
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Brand);
+    }
+
+    [Fact]
+    public async Task A_price_magnitude_is_never_read_as_a_screen_size()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "ديل 24 ألف",
+            OllamaChatTransportResult.ReplyReceived(
+                ScriptedOllamaClient.Reply(
+                    "ProductSearch",
+                    sizeInches: 27,
+                    budgetType: "Hard",
+                    budgetTarget: 24000)));
+
+        Assert.Equal("Dell", result.Interpretation!.Brand);
+        Assert.Equal(27, result.Interpretation.SizeInches);
+        Assert.Equal(NluBudgetType.Hard, result.Interpretation.BudgetType);
+        Assert.Equal(24000, result.Interpretation.BudgetTarget);
+    }
+
     private static async Task<(NluAnalysisResult Result, ScriptedOllamaClient.ScriptedTransport Transport)>
         AnalyzeAsync(string message, params OllamaChatTransportResult[] replies)
     {

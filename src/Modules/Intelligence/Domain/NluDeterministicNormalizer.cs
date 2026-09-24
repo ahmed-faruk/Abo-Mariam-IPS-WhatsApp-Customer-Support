@@ -37,6 +37,16 @@ internal static class NluDeterministicNormalizer
         "جنيه", "ج", "جم", "egp", "le", "pound", "pounds",
     };
 
+    private static readonly HashSet<string> PriceMagnitudeUnits = new(StringComparer.Ordinal)
+    {
+        "الف",
+    };
+
+    private static readonly HashSet<string> AlternativeMarkers = new(StringComparer.Ordinal)
+    {
+        "او", "ولا", "or",
+    };
+
     private static readonly HashSet<string> SizeUnits = new(StringComparer.Ordinal)
     {
         "بوصه", "بوصات", "انش", "inch", "inches",
@@ -124,7 +134,7 @@ internal static class NluDeterministicNormalizer
             normalized = normalized with { SizeInches = inches.Value };
         }
 
-        if (ExplicitIntent(tokens, interpretation, brand, panel, size?.Value, budget, workingHours) is { } intent)
+        if (ExplicitIntent(tokens, normalized, brand, panel, size?.Value, budget, workingHours) is { } intent)
         {
             normalized = normalized with { Intent = intent };
         }
@@ -132,19 +142,45 @@ internal static class NluDeterministicNormalizer
         return normalized;
     }
 
+    private static bool IsNegatedOccurrence(IReadOnlyList<string> tokens, int index)
+    {
+        if (index > 0
+            && tokens[index - 1] is "لا" or "not" or "no")
+        {
+            return true;
+        }
+
+        return index >= 2
+            && tokens[index - 2] == "مش"
+            && tokens[index - 1] is "عايز" or "عاوز" or "محتاج";
+    }
+
+    private static bool IsAlternativeOccurrence(IReadOnlyList<string> tokens, int index) =>
+        (index > 0 && AlternativeMarkers.Contains(tokens[index - 1]))
+        || (index + 1 < tokens.Count && AlternativeMarkers.Contains(tokens[index + 1]));
+
     /// <summary>
     /// The explicit Dell alias family of Issue #32. Whole tokens only: <c>الديل</c> and <c>بديل</c>
     /// are different tokens and stay unmatched.
     /// </summary>
     private static string? ExplicitBrand(IReadOnlyList<string> tokens, NluInterpretation interpretation)
     {
-        if (!tokens.Any(IsDellAlias))
+        var dellIndices = Enumerable.Range(0, tokens.Count)
+            .Where(index => IsDellAlias(tokens[index]))
+            .ToList();
+
+        if (dellIndices.Count == 0)
         {
             return null;
         }
 
-        // When the message also contains the brand the model named, the text names two brands and
-        // choosing one of them would be a guess.
+        if (dellIndices.Any(index =>
+                IsNegatedOccurrence(tokens, index)
+                || IsAlternativeOccurrence(tokens, index)))
+        {
+            return null;
+        }
+
         if (interpretation.Brand is { } modelBrand
             && !string.Equals(modelBrand, CanonicalDellBrand, StringComparison.OrdinalIgnoreCase)
             && tokens.Contains(NormalizeWord(modelBrand), StringComparer.Ordinal))
@@ -164,9 +200,18 @@ internal static class NluDeterministicNormalizer
     /// </summary>
     private static string? ExplicitPanel(IReadOnlyList<string> tokens)
     {
-        var panels = tokens
-            .Select(CanonicalPanel)
-            .Where(panel => panel is not null)
+        var occurrences = tokens
+            .Select((token, index) => (Panel: CanonicalPanel(token), Index: index))
+            .Where(occurrence => occurrence.Panel is not null)
+            .ToList();
+
+        if (occurrences.Any(occurrence => IsNegatedOccurrence(tokens, occurrence.Index)))
+        {
+            return null;
+        }
+
+        var panels = occurrences
+            .Select(occurrence => occurrence.Panel!)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
@@ -324,6 +369,7 @@ internal static class NluDeterministicNormalizer
 
             if ((next is not null
                     && (CurrencyUnits.Contains(next)
+                        || PriceMagnitudeUnits.Contains(next)
                         || RefreshUnits.Contains(next)
                         || DurationUnits.Contains(next)
                         || IsQuantityToken(next)))
@@ -401,17 +447,15 @@ internal static class NluDeterministicNormalizer
         // product fact and does not already ask for a human.
         if (workingHours
             && interpretation.Intent != NluIntent.HumanHandoff
-            && brand is null
-            && panel is null
-            && sizeInches is null
-            && budget is null)
+            && !HasProductSpecificField(interpretation))
         {
             return NluIntent.BusinessInfo;
         }
 
         // A filter-only catalogue request: the model answered with catalogue constraints and named no
         // specific product, so the turn refines or starts a search instead of asking about one item.
-        if (IsFilterOnlySearchRefinement(interpretation))
+        if (!tokens.Any(token => AlternativeMarkers.Contains(token))
+            && IsFilterOnlySearchRefinement(interpretation))
         {
             return NluIntent.ProductSearch;
         }
@@ -448,6 +492,11 @@ internal static class NluDeterministicNormalizer
                 interpretation.BudgetMin is not null || interpretation.BudgetMax is not null,
             _ => false,
         });
+
+    private static bool HasProductSpecificField(NluInterpretation interpretation) =>
+        !string.IsNullOrWhiteSpace(interpretation.ModelCode)
+        || !string.IsNullOrWhiteSpace(interpretation.Reference)
+        || HasCatalogueFilter(interpretation);
 
     private static bool IsUnambiguousBudgetTurn(
         IReadOnlyList<string> tokens,
