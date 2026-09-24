@@ -1555,3 +1555,105 @@ Purpose
 prove the product idea to the client safely and credibly;
 not prove production throughput or 24/7 availability.
 ```
+
+---
+
+# 36. Controlled Client Demo Fast Track exceptions (temporary)
+
+This section records temporary exceptions for the Controlled Client Demo Fast Track. It sits beside
+the Full MVP technical baseline and does not replace it. Unless an exception is explicitly stated
+here, the rest of this document remains authoritative.
+
+## 36.1 Scope and execution sequence
+
+The controlled-demo sequence is R0 / Issue #32, then Issue #15, then the human Phase 0.5 first-light
+checkpoint, then Issue #14, then Issue #19.
+
+Issue #19 absorbs the operational responsibilities formerly assigned to Issues #16, #17 and #18,
+including tunnel/callback verification, live-smoke safety, the section 29 model pre-warm/residency
+steps and final gate execution. Existing references assigning those demo operations to the former
+tickets are superseded only for this fast-track sequence.
+
+The frozen AI configuration of section 8.2, the bounded normalization rules of section 8.5,
+reference semantics, the historical Issue #8 evidence and `docs/demo/DEMO-CRITICAL-GATE-v1.md`
+remain unchanged.
+
+## 36.2 Admin Lite exception
+
+For the Controlled Client Demo only, Issue #14 replaces the Full MVP authenticated Admin
+implementation with the smallest local-only Admin Lite surface required by the frozen demo script.
+
+The public/demo listener is `127.0.0.1:5000`. The Admin Lite listener is `127.0.0.1:5001`.
+Cloudflare exposes only `127.0.0.1:5000`. Every `/admin/*` request is rejected as not found unless
+`HttpContext.Connection.LocalPort` equals the configured Admin Lite port.
+
+This is a controlled-demo exposure decision, not a pilot or production security pattern. The Full
+MVP authenticated Admin requirements remain the target outside this temporary demo exception.
+
+Admin Lite is limited to catalogue price and quantity edits, Storefront WorkingHours editing,
+conversation listing and the reset-controlled transcript view. Full catalogue CRUD, Identity
+users/roles, dashboards, audit UI, manual replies and takeover/release UI remain deferred.
+
+## 36.3 Testing and CI exception
+
+For the Controlled Client Demo Fast Track, `Integration.Tests` runs as a separate blocking GitHub
+Actions job with its own timeout. Issue #15 adds one highest-seam full-composition application test
+in `Integration.Tests`. That test uses the real Host.Web composition, real PostgreSQL, Messaging
+Inbox/Outbox workers, Conversations, Catalog and deterministic renderer, with deterministic test
+doubles only for `IAiNluClient` and the outbound Meta sender.
+
+The exhaustive `E2E.Tests` suite and Playwright Admin smoke are deferred for the client demo.
+Coverage-threshold enforcement, vulnerability scanning and Docker-image build are also deferred to
+later Full MVP or pilot CI work. These deferrals do not remove those layers from the Full MVP
+technical baseline.
+
+## 36.4 Demo readiness endpoint
+
+Issue #15 adds `/health/ready`. It is healthy only when PostgreSQL successfully answers `SELECT 1`
+and Ollama successfully answers `GET /api/tags` with the configured frozen model
+`qwen3.5:2b-q4_K_M` present.
+
+An unmet required dependency returns HTTP 503. Readiness performs no inference, performs no Meta API
+call and does not duplicate WhatsApp startup configuration validation. `/health/live` keeps its
+existing meaning.
+
+## 36.5 Demo data and operator tooling
+
+Issue #15 supplies deterministic demo seed, reset, verification and signed-webhook replay tooling.
+Demo-data persistence operations remain module-owned behind explicit demo contracts. Production
+`Program.cs` does not register those demo-data mutation contracts.
+
+The Controlled Demo uses `Catalog:Search:SizeToleranceInches = 0.5` and
+`Catalog:Search:SoftBudgetTolerance = 0.10`. These are controlled-demo values only, not pilot or
+production defaults, and they are not committed as hidden fallback values.
+
+The reset restores approved demo catalogue and Storefront values and clears the named demo
+customers' Messaging and Conversations state so the next run starts with no carried reference,
+shortlist or Human mode. It does not redesign Inbox/Outbox persistence and does not add a
+cross-module transaction.
+
+Signed webhook replay uses exact raw payload bytes from a capture file. Persisted `jsonb` webhook
+content is not used to reconstruct the original signed byte stream.
+
+## 36.6 Gate timing evidence
+
+Demo-Critical Gate v1 section D measures the complete `IAiNluClient.AnalyzeAsync` operation as
+observed by the application.
+
+Issue #15 records one Information-level timing event for each interpreted turn around that existing
+call using the application's `TimeProvider`. The event contains only the provider message id, NLU
+status and elapsed milliseconds. It contains no customer message body, customer/phone identifier or
+commercial data.
+
+This instrumentation is evidence only. It does not change routing, retry behavior, model
+configuration, normalization, rendering, conversation state or reply behavior.
+
+## 36.7 Demo-only deferrals and operational ownership
+
+The following remain deferred for the Controlled Client Demo only: full authenticated Admin, full
+catalogue-authoring CRUD, Identity users and roles, Playwright Admin smoke, exhaustive E2E suite,
+manual agent reply, pilot/production hardening, coverage-threshold enforcement, vulnerability
+scanning and Docker-image build.
+
+Issue #19 owns the absorbed operational work from Issues #16, #17 and #18. The Full MVP and
+future-pilot requirements elsewhere in this document remain the target after client validation.
