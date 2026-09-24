@@ -660,6 +660,125 @@ public sealed class ConversationIntentRouterTests
     }
 
     [Fact]
+    public async Task A_model_reference_that_is_not_an_alias_is_recovered_from_the_customer_text()
+    {
+        // The captured DEMO-07 model reply of Issue #32: the frozen model paraphrases the reference as
+        // "the previous monitor". The customer text itself names one existing allowlisted alias, so the
+        // recovery resolves the stored current product instead of asking the customer to repeat it.
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21, quantity: 0));
+
+        var route = await harness.RouteAsync(
+            NluIntent.AvailabilityCheck,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.AvailabilityCheck,
+                reference: "the previous monitor"),
+            state: StateWithShortlist((10, 21), (11, 25)),
+            body: "الديل اللي قولتلي عليها لسه موجودة؟");
+
+        Assert.Equal(ConversationResponseKind.Availability, route.Intent.Kind);
+        Assert.Equal(10, route.Intent.ModelId);
+        Assert.Equal(21, route.Intent.VariantId);
+    }
+
+    [Fact]
+    public async Task A_comparison_with_a_paraphrased_reference_is_recovered_from_the_customer_text()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductComparison,
+                reference: "the previous monitor"),
+            state: StateWithShortlist((10, 21), (11, 25)),
+            body: "عايز أقارن الأولى");
+
+        Assert.Equal(ConversationResponseKind.ProductComparison, route.Intent.Kind);
+        Assert.Equal([10, 11], route.Intent.ModelIds);
+    }
+
+    [Fact]
+    public async Task A_comparison_with_two_conjunction_joined_positions_clarifies()
+    {
+        // "الأولى والتانية" names two different positions; the recovery must not pick one of them.
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductComparison,
+                reference: "the previous monitor"),
+            state: StateWithShortlist((10, 21), (11, 25)),
+            body: "الأولى والتانية؟");
+
+        Assert.Equal(ConversationResponseKind.Clarification, route.Intent.Kind);
+        Assert.Equal(ConversationReferenceReasons.UnresolvedReference, route.Intent.ReasonCode);
+        Assert.Empty(harness.Details.RequestedModelIds);
+    }
+
+    [Fact]
+    public async Task A_model_reference_that_cannot_resolve_against_state_still_recovers_from_the_customer_text()
+    {
+        // The model named the second position, but only one item was ever shown. The customer text names
+        // the current product, so the turn is answered about that product rather than clarified.
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+
+        var route = await harness.RouteAsync(
+            NluIntent.PriceCheck,
+            interpretation: ConversationSamples.Interpretation(NluIntent.PriceCheck, reference: "second"),
+            state: StateWithShortlist((10, 21)),
+            body: "ده بكام؟");
+
+        Assert.Equal(ConversationResponseKind.Price, route.Intent.Kind);
+        Assert.Equal(10, route.Intent.ModelId);
+        Assert.Equal(21, route.Intent.VariantId);
+    }
+
+    [Fact]
+    public async Task A_paraphrased_reference_on_a_price_question_resolves_the_first_displayed_result()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+
+        var route = await harness.RouteAsync(
+            NluIntent.PriceCheck,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.PriceCheck,
+                reference: "the previous monitor"),
+            state: StateWithShortlist((10, 21), (11, 25)),
+            body: "سعر الأولى كام؟");
+
+        Assert.Equal(ConversationResponseKind.Price, route.Intent.Kind);
+        Assert.Equal(10, route.Intent.ModelId);
+        Assert.Equal(21, route.Intent.VariantId);
+    }
+
+    [Fact]
+    public async Task A_comparison_with_an_ambiguous_customer_text_still_clarifies()
+    {
+        var harness = new RouterHarness();
+        harness.Details.Publish(ConversationSamples.ActiveModel(10, 21));
+        harness.Details.Publish(ConversationSamples.ActiveModel(11, 25));
+
+        var route = await harness.RouteAsync(
+            NluIntent.ProductComparison,
+            interpretation: ConversationSamples.Interpretation(
+                NluIntent.ProductComparison,
+                reference: "the previous monitor"),
+            state: StateWithShortlist((10, 21), (11, 25)),
+            body: "الأولى دي");
+
+        Assert.Equal(ConversationResponseKind.Clarification, route.Intent.Kind);
+        Assert.Equal(ConversationReferenceReasons.UnresolvedReference, route.Intent.ReasonCode);
+    }
+
+    [Fact]
     public async Task A_reference_to_a_retired_model_is_a_deterministic_no_match()
     {
         var harness = new RouterHarness();
