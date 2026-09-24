@@ -150,9 +150,17 @@ internal static class NluDeterministicNormalizer
             return true;
         }
 
-        return index >= 2
+        if (index >= 2
             && tokens[index - 2] == "مش"
-            && tokens[index - 1] is "عايز" or "عاوز" or "محتاج";
+            && tokens[index - 1] is "عايز" or "عاوز" or "محتاج")
+        {
+            return true;
+        }
+
+        return index >= 3
+            && tokens[index - 3] == "مش"
+            && tokens[index - 2] is "عايز" or "عاوز" or "محتاج"
+            && MonitorNouns.Contains(tokens[index - 1]);
     }
 
     private static bool IsAlternativeOccurrence(IReadOnlyList<string> tokens, int index) =>
@@ -205,7 +213,9 @@ internal static class NluDeterministicNormalizer
             .Where(occurrence => occurrence.Panel is not null)
             .ToList();
 
-        if (occurrences.Any(occurrence => IsNegatedOccurrence(tokens, occurrence.Index)))
+        if (occurrences.Any(occurrence =>
+                IsNegatedOccurrence(tokens, occurrence.Index)
+                || IsAlternativeOccurrence(tokens, occurrence.Index)))
         {
             return null;
         }
@@ -279,6 +289,11 @@ internal static class NluDeterministicNormalizer
             return (phraseBoundIndices, null);
         }
 
+        if (HasCompetingAlternativeAmount(tokens, numberIndex))
+        {
+            return (phraseBoundIndices, null);
+        }
+
         var next = numberIndex + 1 < tokens.Count ? tokens[numberIndex + 1] : null;
 
         // A number owned by a size, refresh, duration or quantity unit is not a budget.
@@ -337,6 +352,25 @@ internal static class NluDeterministicNormalizer
     private static bool IsQuantityToken(string token) =>
         QuantityUnits.Contains(token) || string.Equals(token, "شاشه", StringComparison.Ordinal);
 
+    private static bool HasCompetingAlternativeAmount(
+        IReadOnlyList<string> tokens,
+        int numberIndex)
+    {
+        var markerIndex = numberIndex + 1;
+
+        if (markerIndex < tokens.Count
+            && (CurrencyUnits.Contains(tokens[markerIndex])
+                || PriceMagnitudeUnits.Contains(tokens[markerIndex])))
+        {
+            markerIndex++;
+        }
+
+        return markerIndex + 1 < tokens.Count
+            && AlternativeMarkers.Contains(tokens[markerIndex])
+            && TryInteger(tokens[markerIndex + 1], out var competingAmount)
+            && competingAmount > 0;
+    }
+
     /// <summary>
     /// The standalone monitor size of Issue #32. A number is a size only when it is inside the
     /// documented size range, no other role owns it (the budget phrase, a resolution, a refresh rate,
@@ -360,6 +394,11 @@ internal static class NluDeterministicNormalizer
             if (!TryInteger(tokens[index], out var number)
                 || number < MinMonitorSizeInches
                 || number > MaxMonitorSizeInches)
+            {
+                continue;
+            }
+
+            if (IsNegatedOccurrence(tokens, index))
             {
                 continue;
             }

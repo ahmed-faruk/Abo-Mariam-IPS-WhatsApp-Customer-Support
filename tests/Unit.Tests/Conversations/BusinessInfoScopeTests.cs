@@ -15,6 +15,7 @@ public sealed class BusinessInfoScopeTests
     [InlineData("مواعيدكم إيه؟", BusinessInfoKeyNames.WorkingHours)]
     [InlineData("ايه مواعيد الشغل", BusinessInfoKeyNames.WorkingHours)]
     [InlineData("what are your working hours", BusinessInfoKeyNames.WorkingHours)]
+    [InlineData("فاتحين امتى؟", BusinessInfoKeyNames.WorkingHours)]
     [InlineData("فين المكان", BusinessInfoKeyNames.Address)]
     [InlineData("العنوان ايه", BusinessInfoKeyNames.Address)]
     [InlineData("where are you located", BusinessInfoKeyNames.Address)]

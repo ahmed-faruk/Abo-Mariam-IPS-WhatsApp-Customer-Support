@@ -812,6 +812,65 @@ public sealed class NluDeterministicNormalizationTests
         Assert.Equal(24000, result.Interpretation.BudgetTarget);
     }
 
+    [Fact]
+    public async Task A_negated_size_is_not_a_stated_size()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "مش عايز 24 بوصة",
+            OllamaChatTransportResult.ReplyReceived(
+                ScriptedOllamaClient.Reply("ProductSearch", sizeInches: 27)));
+
+        Assert.Equal(27, result.Interpretation!.SizeInches);
+    }
+
+    [Fact]
+    public async Task A_negated_Dell_through_a_monitor_noun_is_not_a_stated_brand()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "مش عايز شاشة ديل",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Brand);
+    }
+
+    [Fact]
+    public async Task A_negated_panel_through_a_monitor_noun_is_not_a_stated_panel()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "مش عايز شاشة IPS",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Panel);
+    }
+
+    [Fact]
+    public async Task Two_competing_budget_amounts_keep_the_model_budget()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "في حدود 3000 أو 4000 جنيه",
+            OllamaChatTransportResult.ReplyReceived(
+                ScriptedOllamaClient.Reply(
+                    "ProductSearch",
+                    budgetType: "Range",
+                    budgetMin: 3000,
+                    budgetMax: 4000)));
+
+        Assert.Equal(NluBudgetType.Range, result.Interpretation!.BudgetType);
+        Assert.Equal(3000, result.Interpretation.BudgetMin);
+        Assert.Equal(4000, result.Interpretation.BudgetMax);
+        Assert.Null(result.Interpretation.BudgetTarget);
+    }
+
+    [Fact]
+    public async Task A_panel_offered_as_an_alternative_is_not_a_stated_panel()
+    {
+        var (result, _) = await AnalyzeAsync(
+            "عايز IPS ولا Mini-LED",
+            OllamaChatTransportResult.ReplyReceived(ScriptedOllamaClient.Reply("ProductSearch")));
+
+        Assert.Null(result.Interpretation!.Panel);
+    }
+
     private static async Task<(NluAnalysisResult Result, ScriptedOllamaClient.ScriptedTransport Transport)>
         AnalyzeAsync(string message, params OllamaChatTransportResult[] replies)
     {

@@ -47,6 +47,7 @@ public static class BusinessInfoScope
     [
         (BusinessInfoKeyNames.WorkingHours, [
             Alias.Noun("مواعيد"), Alias.Noun("معاد"), Alias.Noun("بتفتحوا"), Alias.Noun("بتقفلوا"),
+            Alias.OwnWord("فاتحين"),
             Alias.OwnWord("working hours"), Alias.OwnWord("opening hours"), Alias.OwnWord("hours"), Alias.OwnWord("open"),
         ]),
         (BusinessInfoKeyNames.Address, [
