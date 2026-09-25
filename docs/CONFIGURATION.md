@@ -130,3 +130,15 @@ webhooks (`docs/demo/FAST-TRACK-RUNBOOK.md`). It reads environment variables onl
 The two tolerances are the Controlled Client Demo values of `docs/TECHNICAL.md` section 36.5. They
 are **not** pilot or production defaults, and they are not committed to `appsettings.json`; the
 demo sets them in its git-ignored `.env.demo`, and `verify` fails when they differ.
+
+## Admin Lite listener (Issue #14)
+
+| Configuration key | Environment variable | Value for the controlled demo |
+|---|---|---|
+| `AdminLite:Port` | `AdminLite__Port` | `5001`; unset means `/admin` is not found on any port |
+| `Kestrel:Endpoints:Public:Url` | `Kestrel__Endpoints__Public__Url` | `http://127.0.0.1:5000` (the only tunnelled listener) |
+| `Kestrel:Endpoints:Admin:Url` | `Kestrel__Endpoints__Admin__Url` | `http://127.0.0.1:5001` (never tunnelled) |
+
+`AdminLite:Port` must be unset or between 1024 and 65535; any other value stops the host at startup.
+Nothing is committed to `appsettings.json`. The exposure rule and its limits are in
+`src/Host.Web/Admin/README.md`.
