@@ -1085,3 +1085,48 @@ multi-tenant SaaS
 ```
 
 **The product scope is lean; the engineering baseline is not disposable.**
+
+---
+
+# 21. Controlled Client Demo Fast Track (temporary acceptance slice)
+
+The Full MVP v3.2 documented in this plan remains the target product and engineering baseline.
+The Controlled Client Demo Fast Track is a temporary, narrower acceptance slice used only to obtain
+client validation earlier. Completing the fast track is not Full MVP completion and does not
+permanently remove or weaken any baseline requirement.
+
+The controlled-demo execution sequence is:
+
+- R0 / Issue #32 - completed.
+- Issue #15 - demo foundation and full-composition smoke coverage.
+- Phase 0.5 - human first-light WhatsApp checkpoint.
+- Issue #14 - local-only Admin Lite.
+- Issue #19 - final live smoke and unchanged Demo-Critical Gate v1.
+
+Phase 0.5 is a human checkpoint, not a coding issue. Issue #14 starts only after Issue #15 is merged
+and Phase 0.5 has passed. Issue #19 absorbs the remaining operational demo responsibilities formerly
+assigned to Issues #16, #17 and #18.
+
+For the Controlled Client Demo only, the Full MVP Admin baseline is narrowed to the local-only Admin
+Lite of Issue #14.
+
+The following items are deferred for the Controlled Client Demo only:
+
+- full authenticated Admin;
+- full catalogue-authoring CRUD;
+- Identity users and roles;
+- Playwright Admin smoke;
+- exhaustive E2E suite;
+- manual agent reply;
+- pilot/production hardening.
+
+These are demo-only deferrals. They remain part of the Full MVP or later pilot/production baseline
+where this plan already requires them.
+
+`docs/demo/DEMO-CRITICAL-GATE-v1.md` remains the final client-demo acceptance gate and is unchanged.
+The historical Issue #8 general benchmark remains FAIL. Successful Controlled Demo evidence does not
+reclassify that historical result.
+
+The fast track preserves the existing architecture and commercial-fact ownership rules. .NET and
+PostgreSQL remain authoritative for commercial facts, the AI adapter remains limited to language
+understanding, and existing module boundaries remain in force.

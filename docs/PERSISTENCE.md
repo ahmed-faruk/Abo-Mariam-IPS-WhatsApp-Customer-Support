@@ -107,3 +107,10 @@ dotnet test tests/Integration.Tests
 ```
 
 Docker Desktop must be running. The tests never use an in-memory or mocked database.
+
+## Pinned EF tool (Issue #15)
+
+The `dotnet-ef` CLI is pinned in `.config/dotnet-tools.json` to the repository's EF Core version.
+Run `dotnet tool restore` once per clone; `dotnet ef` then uses the pinned 10.0.8 tool instead of a
+global one. The controlled-demo database procedure (migrate from empty, seed, reset, verify) is in
+`docs/demo/FAST-TRACK-RUNBOOK.md`.

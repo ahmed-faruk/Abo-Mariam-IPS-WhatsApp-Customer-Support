@@ -113,3 +113,20 @@ dotnet user-secrets set "WhatsApp:VerifyToken" "<verify-token>" --project src/Ho
 dotnet user-secrets set "WhatsApp:AppSecret" "<app-secret>" --project src/Host.Web
 dotnet user-secrets set "WhatsApp:AccessToken" "<access-token>" --project src/Host.Web
 ```
+
+## DemoOps operator tool (Issue #15)
+
+`tools/DemoOps` seeds, resets and verifies the controlled-demo data and captures or replays signed
+webhooks (`docs/demo/FAST-TRACK-RUNBOOK.md`). It reads environment variables only:
+
+| Environment variable | Used by | Value |
+|---|---|---|
+| `ConnectionStrings__DefaultConnection` | `seed`, `reset`, `verify` | the complete Npgsql connection string |
+| `Catalog__Search__SizeToleranceInches` | `verify`, the demo searches | `0.5` |
+| `Catalog__Search__SoftBudgetTolerance` | `verify`, the demo searches | `0.10` |
+| `WhatsApp__PhoneNumberId` | `capture create` | the receiving phone number id |
+| `WhatsApp__AppSecret` | `capture send` | the app secret that signs `X-Hub-Signature-256` |
+
+The two tolerances are the Controlled Client Demo values of `docs/TECHNICAL.md` section 36.5. They
+are **not** pilot or production defaults, and they are not committed to `appsettings.json`; the
+demo sets them in its git-ignored `.env.demo`, and `verify` fails when they differ.

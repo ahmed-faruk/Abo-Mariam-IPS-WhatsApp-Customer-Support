@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using WhatsAppMonitorAssistant.Modules.Conversations.Contracts;
 using WhatsAppMonitorAssistant.Modules.Conversations.Domain;
 using WhatsAppMonitorAssistant.Modules.Intelligence.Contracts;
@@ -27,7 +28,8 @@ internal sealed class ProcessInboundTurnHandler(
     IAiNluClient nlu,
     IConversationRenderer renderer,
     IOutboundMessageQueue outbox,
-    TimeProvider clock) : IProcessInboundTurn
+    TimeProvider clock,
+    ILogger<ProcessInboundTurnHandler> logger) : IProcessInboundTurn
 {
     /// <summary>The only provider message type the demo interprets. Everything else is unsupported media.</summary>
     internal const string SupportedMessageType = "text";
@@ -370,7 +372,17 @@ internal sealed class ProcessInboundTurnHandler(
         // The frozen prompt of docs/TECHNICAL.md section 8.2 interprets a single text turn, so the
         // context passed here is deliberately empty: reference resolution is deterministic and runs in
         // this module against the stored UX state instead of being sent to the model.
+        var started = clock.GetTimestamp();
         var analysis = await nlu.AnalyzeAsync(turn.Body, NluConversationContext.Empty, cancellationToken);
+
+        // Demo-Critical Gate v1 section D evidence (docs/TECHNICAL.md section 36.6): the elapsed time of
+        // the complete analysis as the application observed it. Only the provider message id, the status
+        // and the duration are logged: never the customer's text, number or any commercial fact.
+        logger.LogInformation(
+            "NLU analysis for inbound {ProviderMessageId} finished with {NluStatus} in {ElapsedMilliseconds} ms",
+            turn.ProviderMessageId,
+            analysis.Status,
+            (long)clock.GetElapsedTime(started).TotalMilliseconds);
 
         return await router.RouteAsync(
             context.ConversationId,

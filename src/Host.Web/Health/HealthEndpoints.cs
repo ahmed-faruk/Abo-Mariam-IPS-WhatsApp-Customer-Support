@@ -1,9 +1,8 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+
 namespace WhatsAppMonitorAssistant.Host.Web.Health;
 
-/// <summary>
-/// Transport-only health endpoints. Readiness checks for PostgreSQL and Ollama are
-/// added by the tickets that introduce those dependencies.
-/// </summary>
+/// <summary>Transport-only liveness and readiness endpoints.</summary>
 public static class HealthEndpoints
 {
     public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder endpoints)
@@ -11,6 +10,14 @@ public static class HealthEndpoints
         ArgumentNullException.ThrowIfNull(endpoints);
 
         endpoints.MapGet("/health/live", () => Results.Ok(new HealthResponse("live")));
+
+        endpoints.MapHealthChecks(
+            "/health/ready",
+            new HealthCheckOptions
+            {
+                Predicate = registration => registration.Tags.Contains("ready"),
+                ResponseWriter = ReadinessResponseWriter.WriteAsync,
+            });
 
         return endpoints;
     }
