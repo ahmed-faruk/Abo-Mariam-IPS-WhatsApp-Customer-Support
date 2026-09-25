@@ -266,6 +266,12 @@
           "Storefront": "[1.0.0, )"
         }
       },
+      "demoops": {
+        "type": "Project",
+        "dependencies": {
+          "Host.Web": "[1.0.0, )"
+        }
+      },
       "host.web": {
         "type": "Project",
         "dependencies": {

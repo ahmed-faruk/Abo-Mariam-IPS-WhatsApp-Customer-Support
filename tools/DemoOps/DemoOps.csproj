@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>DemoOps</AssemblyName>
+    <RootNamespace>WhatsAppMonitorAssistant.Tools.DemoOps</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Host.Web/Host.Web.csproj" />
+  </ItemGroup>
+
+</Project>

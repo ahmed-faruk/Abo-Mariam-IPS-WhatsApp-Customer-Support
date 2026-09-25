@@ -27,6 +27,7 @@
     <ProjectReference Include="../../src/Modules/Identity/Identity.csproj" />
     <ProjectReference Include="../../src/Modules/Messaging/Messaging.csproj" />
     <ProjectReference Include="../../src/Modules/Storefront/Storefront.csproj" />
+    <ProjectReference Include="../../tools/DemoOps/DemoOps.csproj" />
   </ItemGroup>
 
   <ItemGroup>
