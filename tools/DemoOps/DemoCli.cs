@@ -20,6 +20,8 @@ public static partial class DemoCli
 
     public const int VerifyFailed = 3;
 
+    public const int SendFailed = 4;
+
     public const int UsageError = 64;
 
     public const string UsageText = """
@@ -27,11 +29,16 @@ public static partial class DemoCli
           DemoOps seed
           DemoOps reset --customer <wa_id> [--customer <wa_id> ...]
           DemoOps verify --customer <wa_id> [--customer <wa_id> ...]
+          DemoOps capture create --from <wa_id> --text <text> --out <file> [--id <provider_message_id>]
+          DemoOps capture send --file <file> [--url <webhook_url>]
 
         <wa_id> is the customer's WhatsApp number: 8 to 15 digits, no '+'.
         Configuration (environment): ConnectionStrings__DefaultConnection,
-        Catalog__Search__SizeToleranceInches, Catalog__Search__SoftBudgetTolerance.
-        Exit codes: 0 success, 1 unexpected error, 2 reset refused, 3 verify failed, 64 usage error.
+        Catalog__Search__SizeToleranceInches, Catalog__Search__SoftBudgetTolerance,
+        WhatsApp__PhoneNumberId (capture create), WhatsApp__AppSecret (capture send).
+        The default webhook URL is http://127.0.0.1:5000/api/whatsapp/webhook.
+        Exit codes: 0 success, 1 unexpected error, 2 reset refused, 3 verify failed,
+        4 webhook send failed (not HTTP 200), 64 usage error.
         """;
 
     public static async Task<int> RunAsync(
@@ -45,6 +52,20 @@ public static partial class DemoCli
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
+
+        if (args.Count > 0 && args[0] == "capture")
+        {
+            try
+            {
+                return await WebhookCapture.RunCommandAsync(args, configuration, output, error, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                error.WriteLine($"ERROR: {exception.GetType().Name}: {exception.Message}");
+
+                return UnexpectedError;
+            }
+        }
 
         if (!TryParse(args, out var command, out var customers, out var problem))
         {
