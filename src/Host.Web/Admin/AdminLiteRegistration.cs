@@ -1,4 +1,7 @@
+using System.Text.Encodings.Web;
+using System.Text.Unicode;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.WebEncoders;
 
 namespace WhatsAppMonitorAssistant.Host.Web.Admin;
 
@@ -19,6 +22,11 @@ public static class AdminLiteRegistration
         services.AddSingleton<IValidateOptions<AdminLiteOptions>, AdminLiteOptionsValidator>();
 
         services.AddRazorPages(options => options.RootDirectory = "/Admin/Pages");
+
+        // The pages show Arabic catalogue and business text. HTML-significant characters are still
+        // encoded; letters of every script are written as themselves instead of as character references.
+        services.Configure<WebEncoderOptions>(options =>
+            options.TextEncoderSettings = new TextEncoderSettings(UnicodeRanges.All));
 
         return services;
     }

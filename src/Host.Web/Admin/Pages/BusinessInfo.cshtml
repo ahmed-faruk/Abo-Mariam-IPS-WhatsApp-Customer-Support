@@ -21,5 +21,11 @@
       }
     </tbody>
   </table>
+  <h2>Edit WorkingHours</h2>
+  <form method="post" asp-page-handler="WorkingHours">
+    <textarea name="answerAr" rows="3" cols="80" required>@Model.Rows.FirstOrDefault(row => row.Key == "WorkingHours").Value?.AnswerAr</textarea>
+    <br />
+    <button type="submit">Save WorkingHours</button>
+  </form>
 </body>
 </html>
