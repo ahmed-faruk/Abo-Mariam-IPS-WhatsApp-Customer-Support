@@ -239,3 +239,26 @@ demoops verify --customer <main wa_id> [--customer <preflight wa_id>]
 Both must exit `0` before the next session. If `reset` exits `2`, a message of those customers is
 still being processed: wait a few seconds and run it again. Keep the `verify` output as the reset
 record.
+
+## 14. NLU timing evidence for Gate section D
+
+For every interpreted text turn the host writes exactly one Information line around the complete
+`IAiNluClient.AnalyzeAsync` call (docs/TECHNICAL.md section 36.6):
+
+```text
+NLU analysis for inbound <provider message id> finished with <status> in <milliseconds> ms
+```
+
+It carries only the provider message id, the NLU status (`Success`, `InvalidModelOutput`,
+`AiUnavailable` or `Timeout`) and the elapsed milliseconds: never the customer's text, number or any
+commercial value. Unsupported media, empty messages and Human-mode conversations are not interpreted
+and log no line.
+
+After each timed gate turn, take the single new line from the host log of section 8:
+
+```bash
+grep 'NLU analysis for inbound' ~/demo-evidence/host-<timestamp>.log
+```
+
+Record its provider message id and milliseconds against the scenario. Gate section D computes the
+median and p95 over the ten timed turns of one run.

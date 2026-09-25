@@ -1530,7 +1530,7 @@ public sealed class ProcessInboundTurnTests
                 outbox,
                 search,
                 details,
-                new ProcessInboundTurnHandler(store, router, nlu, renderer, outbox, clock),
+                new ProcessInboundTurnHandler(store, router, nlu, renderer, outbox, clock, Microsoft.Extensions.Logging.Abstractions.NullLogger<ProcessInboundTurnHandler>.Instance),
                 journal);
         }
 
