@@ -40,6 +40,8 @@ internal sealed class AdminLiteHostFactory : WebApplicationFactory<Program>
         });
     }
 
+    public string ConnectionString => connectionString;
+
     public int PublicPort { get; }
 
     public int AdminPort { get; }

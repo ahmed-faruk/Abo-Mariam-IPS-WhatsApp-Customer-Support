@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using WhatsAppMonitorAssistant.Integration.Tests.Persistence;
@@ -56,6 +57,98 @@ public sealed partial class AdminLiteCatalogTests(PostgresContainerFixture postg
         Assert.Equal(25, rows.Count);
         Assert.Equal((0, false), (key.Quantity, key.IsActive));
     }
+
+    [Fact]
+    public async Task P1_a_price_edit_is_audited_under_the_demo_actor_and_seen_by_the_customer_read_path()
+    {
+        await using var factory = await StartSeededAsync();
+        var keyId = await KeyVariantIdAsync(factory);
+        using var client = factory.AdminClient();
+
+        using var response = await AdminForms.PostAsync(client, Page, "Price", Fields(keyId, "price", "2350"));
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal((2350m, true), await CustomerFactsAsync(factory, keyId));
+        Assert.Equal("UpdatePrice|demo-operator", await LastAuditAsync(factory, keyId));
+    }
+
+    [Fact]
+    public async Task P2_a_quantity_of_zero_makes_the_variant_unavailable_to_customers()
+    {
+        await using var factory = await StartSeededAsync();
+        var keyId = await KeyVariantIdAsync(factory);
+        using var client = factory.AdminClient();
+
+        using var response = await AdminForms.PostAsync(client, Page, "Quantity", Fields(keyId, "quantity", "0"));
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal((2400m, false), await CustomerFactsAsync(factory, keyId));
+        Assert.Equal("UpdateQuantity|demo-operator", await LastAuditAsync(factory, keyId));
+    }
+
+    [Theory]
+    [InlineData("Price", "price", "-1")]
+    [InlineData("Price", "price", "abc")]
+    [InlineData("Price", "price", "")]
+    [InlineData("Quantity", "quantity", "-1")]
+    [InlineData("Quantity", "quantity", "1.5")]
+    [InlineData("Quantity", "quantity", "abc")]
+    public async Task P3_an_invalid_value_is_rejected_and_nothing_changes(string handler, string field, string value)
+    {
+        await using var factory = await StartSeededAsync();
+        var keyId = await KeyVariantIdAsync(factory);
+        using var client = factory.AdminClient();
+
+        using var response = await AdminForms.PostAsync(client, Page, handler, Fields(keyId, field, value));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal((2400m, true), await CustomerFactsAsync(factory, keyId));
+        Assert.Equal(string.Empty, await LastAuditAsync(factory, keyId));
+    }
+
+    [Fact]
+    public async Task P4_a_post_without_an_antiforgery_token_is_rejected()
+    {
+        await using var factory = await StartSeededAsync();
+        var keyId = await KeyVariantIdAsync(factory);
+        using var client = factory.AdminClient();
+
+        using var response = await client.PostAsync($"{Page}?handler=Price", new FormUrlEncodedContent(Fields(keyId, "price", "1")));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal((2400m, true), await CustomerFactsAsync(factory, keyId));
+    }
+
+    [Fact]
+    public async Task P5_an_unknown_variant_is_not_found()
+    {
+        await using var factory = await StartSeededAsync();
+        using var client = factory.AdminClient();
+
+        using var response = await AdminForms.PostAsync(client, Page, "Price", Fields(987654321, "price", "100"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    private static KeyValuePair<string, string>[] Fields(long variantId, string field, string value) =>
+        [new("variantId", variantId.ToString(System.Globalization.CultureInfo.InvariantCulture)), new(field, value)];
+
+    private static async Task<long> KeyVariantIdAsync(AdminLiteHostFactory factory) =>
+        (await GridAsync(factory)).Single(row => row.Sku == KeySku).VariantId;
+
+    /// <summary>The price and availability the customer-facing renderer reads for a variant.</summary>
+    private static async Task<(decimal Price, bool IsAvailable)> CustomerFactsAsync(AdminLiteHostFactory factory, long variantId)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var facts = await scope.ServiceProvider.GetRequiredService<ICatalogProductDetails>().GetVariantFactsAsync(variantId);
+
+        return (facts!.Price, facts.IsAvailable);
+    }
+
+    private static Task<string> LastAuditAsync(AdminLiteHostFactory factory, long variantId) =>
+        new DatabaseCatalogReader(factory.ConnectionString).ScalarAsync(
+            "SELECT action || '|' || user_id FROM catalog.audit_log "
+            + $"WHERE entity_id = {variantId} ORDER BY id DESC LIMIT 1");
 
     private async Task<AdminLiteHostFactory> StartSeededAsync()
     {
