@@ -35,6 +35,7 @@ public static class ConversationsModuleRegistration
         services.AddScoped<ConversationIntentRouter>();
         services.AddScoped<IProcessInboundTurn, ProcessInboundTurnHandler>();
         services.AddScoped<IConversationModeControl, ConversationModeControl>();
+        services.AddScoped<IConversationAdminReads, ConversationAdminReader>();
         services.AddScoped<IInboundMessageProcessor, MessagingInboundMessageProcessor>();
 
         // The deterministic renderer reads the current facts through the Catalog and Storefront contracts,

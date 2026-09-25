@@ -7,7 +7,7 @@ between gate runs. It implements docs/TECHNICAL.md section 36; it does not chang
 (`docs/demo/DEMO-CRITICAL-GATE-v1.md`) or the frozen AI profile of section 8.2.
 
 Everything listens on `127.0.0.1`. Only the public listener `127.0.0.1:5000` is ever tunnelled.
-PostgreSQL (`5432`) and Ollama (`11434`) are never exposed.
+The Admin Lite listener (`5001`), PostgreSQL (`5432`) and Ollama (`11434`) are never exposed.
 
 ## 1. Prerequisites
 
@@ -48,8 +48,10 @@ WhatsApp__VerifyToken='<random string: openssl rand -hex 24>'
 WhatsApp__AppSecret='<app secret>'
 WhatsApp__AccessToken='<access token>'
 
-# The public listener. Only this address is tunnelled.
-ASPNETCORE_URLS=http://127.0.0.1:5000
+# The two loopback listeners: public (the only one tunnelled) and Admin Lite (never tunnelled).
+Kestrel__Endpoints__Public__Url=http://127.0.0.1:5000
+Kestrel__Endpoints__Admin__Url=http://127.0.0.1:5001
+AdminLite__Port=5001
 ```
 
 Load it into every shell that runs a command below:
@@ -139,9 +141,13 @@ curl -s http://127.0.0.1:11434/api/version
 curl -s http://127.0.0.1:11434/api/tags      # must list qwen3.5:2b-q4_K_M
 ```
 
-Record the version. The two-request pre-warm of docs/TECHNICAL.md section 8.4 belongs to the final
-acceptance (Issue #19); it sends no `keep_alive` field because residency comes from
-`OLLAMA_KEEP_ALIVE=-1`:
+Record the version. The pre-warm procedure below is owned by the final acceptance (Issue #19,
+docs/TECHNICAL.md section 36.1); an operator runs it before the first real message of any live
+session. A cold model load
+plus the first inference can exceed the frozen 20 s AI timeout, and the customer then receives the
+fixed AI-unavailable reply (observed at Phase 0.5: `finished with Timeout in 20035 ms`, then 2.2 s once
+warm). The two requests of docs/TECHNICAL.md section 8.4 send no `keep_alive` field, because residency
+comes from `OLLAMA_KEEP_ALIVE=-1`:
 
 ```bash
 curl -s http://127.0.0.1:11434/api/chat -d '{"model":"qwen3.5:2b-q4_K_M","stream":false,"think":false,"options":{"temperature":0,"num_ctx":4096},"format":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]},"messages":[{"role":"user","content":"Return {\"ok\":true}"}]}'
@@ -168,15 +174,29 @@ curl -i http://127.0.0.1:5000/health/ready     # 200 only when PostgreSQL and th
 `/health/ready` answers 503 while PostgreSQL is unreachable or the frozen model is missing from
 Ollama; its body names the failing check.
 
+Admin Lite is at `http://127.0.0.1:5001/admin/catalog` (section 15). The same path on the public
+listener must answer 404:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5001/admin/catalog   # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/admin/catalog   # 404
+```
+
 ## 9. Open the tunnel (public listener only)
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:5000
 ```
 
-Record the generated `https://<name>.trycloudflare.com` hostname. Never tunnel `5432`, `11434` or
-any other local port. A new tunnel gets a new hostname, so every tunnel start or restart repeats
-section 10 and a real smoke message.
+Record the generated `https://<name>.trycloudflare.com` hostname. Never tunnel `5001`, `5432`,
+`11434` or any other local port. Through the tunnel, `/admin` must answer 404:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<name>.trycloudflare.com/admin/catalog   # 404
+```
+
+A new tunnel gets a new hostname, so every tunnel start or restart repeats section 10 and a real
+smoke message.
 
 ## 10. Verify the WhatsApp callback
 
@@ -189,9 +209,24 @@ curl -s "https://<name>.trycloudflare.com/api/whatsapp/webhook?hub.mode=subscrib
 
 Both print `fl-check`. Then, in the Meta app dashboard (WhatsApp › Configuration): Callback URL
 `https://<name>.trycloudflare.com/api/whatsapp/webhook`, Verify token = `$WhatsApp__VerifyToken`,
-**Verify and save**, and subscribe to the `messages` field. Meta notes that some webhooks are not
-sent while an app is in Development mode: if a real message produces no inbound request, switch the
-app to Live.
+**Verify and save**, and subscribe to the `messages` field.
+
+The app must also be subscribed to the WhatsApp Business Account; without it Meta shows the message
+in its own dashboard but never calls the callback. Check it once per app; your app must be listed
+(Meta's internal `WA DevX Webhook Events 1P App` alone is not enough):
+
+```bash
+bash -c 'set -a; . ./.env.demo; set +a; curl -s "https://graph.facebook.com/$WhatsApp__ApiVersion/$WhatsApp__WabaId/subscribed_apps" -H "Authorization: Bearer $WhatsApp__AccessToken"; echo'
+```
+
+If it is missing, subscribe it (the answer is `{"success":true}`):
+
+```bash
+bash -c 'set -a; . ./.env.demo; set +a; curl -s -X POST "https://graph.facebook.com/$WhatsApp__ApiVersion/$WhatsApp__WabaId/subscribed_apps" -H "Authorization: Bearer $WhatsApp__AccessToken"; echo'
+```
+
+Meta also notes that some webhooks are not sent while an app is in Development mode: if a real
+message still produces no inbound request, switch the app to Live.
 
 ## 11. Signed webhook capture and replay
 
@@ -212,7 +247,8 @@ original byte stream.
 
 ## 12. Phase 0.5 first-light checklist
 
-1. Sections 2 to 10 done; `demoops verify --customer <main wa_id>` exits `0`.
+1. Sections 2 to 10 done, including the section 7 pre-warm and the section 10 WABA subscription
+   check; `demoops verify --customer <main wa_id>` exits `0`.
 2. From the main demo phone, send one real message: `عندك ديل 24؟`.
 3. Exactly one reply arrives on the phone.
 4. The database shows one Processed Inbox row and one Sent Outbox row with a provider id:
@@ -226,7 +262,7 @@ original byte stream.
 5. Record the evidence on Issue #14 (see the fast-track plan): time, `main` SHA, Ollama version,
    tunnel hostname, Meta verification result, provider ids and row statuses, a masked phone
    screenshot, the `/health/ready` response, and
-   `lsof -nP -iTCP -sTCP:LISTEN | egrep ':(5000|5432|11434)'` showing loopback bindings only.
+   `lsof -nP -iTCP -sTCP:LISTEN | egrep ':(5000|5001|5432|11434)'` showing loopback bindings only.
 6. Finish with section 13.
 
 ## 13. Reset between sessions
@@ -262,3 +298,18 @@ grep 'NLU analysis for inbound' ~/demo-evidence/host-<timestamp>.log
 
 Record its provider message id and milliseconds against the scenario. Gate section D computes the
 median and p95 over the ten timed turns of one run.
+
+## 15. Admin Lite (operator screens)
+
+Open `http://127.0.0.1:5001/admin/catalog` in a browser on the demo machine. Nothing else can reach it.
+
+| Gate step | Screen | Action |
+|---|---|---|
+| DEMO-06 | `/admin/catalog` | Set the new price of `DEMO-P2419H-A` and press Save in its row |
+| DEMO-07 | `/admin/catalog` | Set the quantity of `DEMO-P2419H-A` to `0` and press Save |
+| DEMO-09 | `/admin/business-info` | Replace the WorkingHours text and press Save WorkingHours |
+| DEMO-10, DEMO-11 | `/admin/conversations` | Open the demo conversation; the page shows its mode and transcript |
+
+Price and quantity changes are audited under `demo-operator`. The next customer message reads the new
+value from PostgreSQL. The transcript is correct only for the reset-controlled single-conversation
+state, so always run section 13 before a session (`src/Host.Web/Admin/README.md`).

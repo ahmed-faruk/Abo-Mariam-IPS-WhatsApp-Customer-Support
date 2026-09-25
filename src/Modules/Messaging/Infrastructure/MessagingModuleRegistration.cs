@@ -24,6 +24,7 @@ public static class MessagingModuleRegistration
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddMessagingPersistence(connectionString);
+        services.AddScoped<IMessagingTranscriptReads, MessagingTranscriptReader>();
         services.AddMessagingQueues(configure);
         services.AddWhatsAppTransport(configureWhatsApp);
 

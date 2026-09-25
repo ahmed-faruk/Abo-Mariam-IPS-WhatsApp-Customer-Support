@@ -1,0 +1,29 @@
+@page "/admin/conversations/{id:long}"
+@model ConversationDetailModel
+@using System.Globalization
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>Admin Lite — Conversation @Model.Conversation!.ConversationId</title>
+</head>
+<body>
+  <nav><a href="/admin/catalog">Catalog</a> | <a href="/admin/business-info">Business info</a> | <a href="/admin/conversations">Conversations</a></nav>
+  <h1>Conversation @Model.Conversation!.ConversationId</h1>
+  <p>Customer: @Model.Conversation.CustomerExternalId · Mode: <strong id="mode">@Model.Conversation.Mode</strong></p>
+  <table border="1" cellpadding="6">
+    <thead><tr><th>Time (UTC)</th><th>From</th><th>Message</th><th>Detail</th></tr></thead>
+    <tbody>
+      @foreach (var line in Model.Lines)
+      {
+        <tr class="@(line.Inbound ? "inbound" : "outbound")">
+          <td>@line.At.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)</td>
+          <td>@(line.Inbound ? "Customer" : "Reply")</td>
+          <td style="white-space: pre-wrap">@line.Text</td>
+          <td>@line.Detail</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</body>
+</html>

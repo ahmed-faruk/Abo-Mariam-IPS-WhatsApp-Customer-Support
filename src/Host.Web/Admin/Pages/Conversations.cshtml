@@ -1,0 +1,28 @@
+@page "/admin/conversations"
+@model ConversationsModel
+@using System.Globalization
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>Admin Lite — Conversations</title>
+</head>
+<body>
+  <nav><a href="/admin/catalog">Catalog</a> | <a href="/admin/business-info">Business info</a> | <a href="/admin/conversations">Conversations</a></nav>
+  <h1>Conversations</h1>
+  <table border="1" cellpadding="6">
+    <thead><tr><th>Id</th><th>Customer</th><th>Mode</th><th>Last activity (UTC)</th></tr></thead>
+    <tbody>
+      @foreach (var row in Model.Rows)
+      {
+        <tr>
+          <td><a href="/admin/conversations/@row.ConversationId">@row.ConversationId</a></td>
+          <td>@row.CustomerExternalId</td>
+          <td>@row.Mode</td>
+          <td>@row.LastActivityAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)</td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</body>
+</html>

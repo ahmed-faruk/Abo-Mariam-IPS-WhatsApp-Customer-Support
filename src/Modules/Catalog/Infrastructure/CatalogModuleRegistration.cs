@@ -41,6 +41,7 @@ public static class CatalogModuleRegistration
         services.AddScoped<ICatalogSearch, SearchProductsHandler>();
         services.AddScoped<ICatalogProductDetails, GetProductDetailsHandler>();
         services.AddScoped<ICatalogCommercialUpdates, VariantCommercialUpdatesHandler>();
+        services.AddScoped<ICatalogAdminGrid, CatalogAdminGridReader>();
 
         return services;
     }

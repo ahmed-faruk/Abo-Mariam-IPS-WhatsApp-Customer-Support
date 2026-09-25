@@ -1,0 +1,44 @@
+@page "/admin/catalog"
+@model CatalogModel
+@using System.Globalization
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <title>Admin Lite — Catalog</title>
+</head>
+<body>
+  <nav><a href="/admin/catalog">Catalog</a> | <a href="/admin/business-info">Business info</a> | <a href="/admin/conversations">Conversations</a></nav>
+  <h1>Catalog</h1>
+  <table border="1" cellpadding="6">
+    <thead><tr><th>Model</th><th>SKU</th><th>Grade</th><th>Price</th><th>Quantity</th><th>Active</th><th>Edit price</th><th>Edit quantity</th></tr></thead>
+    <tbody>
+      @foreach (var row in Model.Rows)
+      {
+        <tr data-sku="@row.Sku">
+          <td>@row.DisplayName (@row.ModelCode)</td>
+          <td>@row.Sku</td>
+          <td>@row.Grade</td>
+          <td>@row.Price.ToString("0.##", CultureInfo.InvariantCulture)</td>
+          <td>@row.Quantity</td>
+          <td>@(row.IsActive ? "yes" : "no")</td>
+          <td>
+            <form method="post" asp-page-handler="Price">
+              <input type="hidden" name="variantId" value="@row.VariantId" />
+              <input name="price" value="@row.Price.ToString("0.##", CultureInfo.InvariantCulture)" size="8" />
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="post" asp-page-handler="Quantity">
+              <input type="hidden" name="variantId" value="@row.VariantId" />
+              <input name="quantity" value="@row.Quantity" size="4" />
+              <button type="submit">Save</button>
+            </form>
+          </td>
+        </tr>
+      }
+    </tbody>
+  </table>
+</body>
+</html>
