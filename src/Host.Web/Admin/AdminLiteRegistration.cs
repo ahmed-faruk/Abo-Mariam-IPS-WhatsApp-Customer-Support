@@ -19,7 +19,7 @@ public static class AdminLiteRegistration
         services.AddOptions<AdminLiteOptions>()
             .Bind(configuration.GetSection(AdminLiteOptions.ConfigurationSectionName))
             .ValidateOnStart();
-        services.AddSingleton<IValidateOptions<AdminLiteOptions>, AdminLiteOptionsValidator>();
+        services.AddSingleton<IValidateOptions<AdminLiteOptions>>(new AdminLiteOptionsValidator(configuration));
 
         services.AddRazorPages(options => options.RootDirectory = "/Admin/Pages");
 

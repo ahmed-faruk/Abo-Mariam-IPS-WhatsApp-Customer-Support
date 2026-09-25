@@ -23,19 +23,35 @@ public sealed partial class AdminLiteCatalogTests(PostgresContainerFixture postg
         await using var factory = await StartSeededAsync();
 
         var rows = await GridAsync(factory);
-        var expected = DemoDataset.Catalogue
-            .SelectMany(model => model.Variants.Select(variant => (model.ModelCode, model.DisplayName, variant)))
-            .OrderBy(entry => entry.ModelCode.ToLowerInvariant(), StringComparer.Ordinal)
-            .ThenBy(entry => entry.variant.Grade, StringComparer.Ordinal)
-            .Select(entry => (entry.ModelCode, entry.DisplayName, entry.variant.Sku, entry.variant.Grade, entry.variant.SellingPrice, entry.variant.Quantity, true))
-            .ToList();
 
-        Assert.Equal(expected, rows.Select(row => (row.ModelCode, row.DisplayName, row.Sku, row.Grade, row.Price, row.Quantity, row.IsActive)));
+        // Written out by hand: byte order of the lowercased model code, then grade.
+        string[] expectedOrder =
+        [
+            "DEMO-24ES-A", "DEMO-24G2-A", "DEMO-24G2-B", "DEMO-24MK600M-A", "DEMO-E2416H-A",
+            "DEMO-E2420H-A", "DEMO-E243-A", "DEMO-E24G4-A", "DEMO-E24G4-B", "DEMO-GW2480-A",
+            "DEMO-P2219H-A", "DEMO-P2418D-A", "DEMO-P2419H-A", "DEMO-P2422H-A", "DEMO-P2422H-B",
+            "DEMO-P2719H-A", "DEMO-P27H20-A", "DEMO-S2421H-A", "DEMO-S2421H-B", "DEMO-S24F350-A",
+            "DEMO-SE2419H-A", "DEMO-T24I10-A", "DEMO-U2419H-A", "DEMO-U2419H-B", "DEMO-U2719D-A",
+        ];
+
+        Assert.Equal(expectedOrder, rows.Select(row => row.Sku));
+
+        var seeded = DemoDataset.Catalogue
+            .SelectMany(model => model.Variants.Select(variant => (model.ModelCode, model.DisplayName, variant)))
+            .ToDictionary(entry => entry.variant.Sku, StringComparer.Ordinal);
+
+        Assert.All(rows, row =>
+        {
+            var seed = seeded[row.Sku];
+            Assert.Equal(
+                (seed.ModelCode, seed.DisplayName, seed.variant.Grade, seed.variant.SellingPrice, seed.variant.Quantity, true),
+                (row.ModelCode, row.DisplayName, row.Grade, row.Price, row.Quantity, row.IsActive));
+        });
 
         using var client = factory.AdminClient();
         var html = await client.GetStringAsync(Page);
 
-        Assert.Equal(expected.Select(entry => entry.Sku), SkuRows().Matches(html).Select(match => match.Groups["sku"].Value));
+        Assert.Equal(expectedOrder, SkuRows().Matches(html).Select(match => match.Groups["sku"].Value));
     }
 
     [Fact]
@@ -90,6 +106,7 @@ public sealed partial class AdminLiteCatalogTests(PostgresContainerFixture postg
     [InlineData("Price", "price", "-1")]
     [InlineData("Price", "price", "abc")]
     [InlineData("Price", "price", "")]
+    [InlineData("Price", "price", "10000000000")]
     [InlineData("Quantity", "quantity", "-1")]
     [InlineData("Quantity", "quantity", "1.5")]
     [InlineData("Quantity", "quantity", "abc")]

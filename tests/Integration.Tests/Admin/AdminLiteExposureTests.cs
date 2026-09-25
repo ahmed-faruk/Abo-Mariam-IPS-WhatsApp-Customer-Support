@@ -98,6 +98,28 @@ public sealed class AdminLiteExposureTests(PostgresContainerFixture postgres)
             StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("public-port", "is also used by Kestrel:Endpoints:Public:Url")]
+    [InlineData("wildcard", "Kestrel:Endpoints:Admin:Url must be a loopback http URL")]
+    [InlineData("lan", "Kestrel:Endpoints:Admin:Url must be a loopback http URL")]
+    [InlineData("missing", "AdminLite:Port requires Kestrel:Endpoints:Admin:Url")]
+    public async Task E7_an_admin_listener_that_is_not_a_distinct_loopback_endpoint_stops_the_host(string setup, string message)
+    {
+        var connectionString = await postgres.CreateMigratedDatabaseAsync();
+        await using var factory = setup switch
+        {
+            // The admin port is the public listener's port, which is the one the tunnel exposes.
+            "public-port" => new AdminLiteHostFactory(connectionString, adminPortEqualsPublicPort: true),
+            "wildcard" => new AdminLiteHostFactory(connectionString, adminUrlOverride: port => $"http://0.0.0.0:{port}"),
+            "lan" => new AdminLiteHostFactory(connectionString, adminUrlOverride: port => $"http://192.168.1.10:{port}"),
+            _ => new AdminLiteHostFactory(connectionString, adminUrlOverride: _ => null),
+        };
+
+        var exception = Assert.ThrowsAny<Exception>(factory.StartServer);
+
+        Assert.Contains(message, exception.ToString(), StringComparison.Ordinal);
+    }
+
     private async Task<AdminLiteHostFactory> StartAsync()
     {
         var factory = new AdminLiteHostFactory(await postgres.CreateMigratedDatabaseAsync());

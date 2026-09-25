@@ -14,6 +14,9 @@ public sealed class CatalogModel(ICatalogAdminGrid grid, ICatalogCommercialUpdat
     /// <summary>The audit actor of every Admin Lite catalogue change.</summary>
     public const string Actor = "demo-operator";
 
+    /// <summary>The largest price the catalogue's numeric(12,2) price column can store.</summary>
+    public const decimal MaxPrice = 9_999_999_999.99m;
+
     public IReadOnlyList<CatalogGridRow> Rows { get; private set; } = [];
 
     public async Task OnGetAsync(CancellationToken cancellationToken)
@@ -23,7 +26,8 @@ public sealed class CatalogModel(ICatalogAdminGrid grid, ICatalogCommercialUpdat
 
     public async Task<IActionResult> OnPostPriceAsync(long variantId, string? price, CancellationToken cancellationToken)
     {
-        if (!decimal.TryParse(price, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value))
+        if (!decimal.TryParse(price, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var value)
+            || value > MaxPrice)
         {
             return BadRequest();
         }

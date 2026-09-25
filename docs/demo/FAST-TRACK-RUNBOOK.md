@@ -141,7 +141,9 @@ curl -s http://127.0.0.1:11434/api/version
 curl -s http://127.0.0.1:11434/api/tags      # must list qwen3.5:2b-q4_K_M
 ```
 
-Record the version. **Pre-warm before the first real message of every session.** A cold model load
+Record the version. The pre-warm procedure below is owned by the final acceptance (Issue #19,
+docs/TECHNICAL.md section 36.1); an operator runs it before the first real message of any live
+session. A cold model load
 plus the first inference can exceed the frozen 20 s AI timeout, and the customer then receives the
 fixed AI-unavailable reply (observed at Phase 0.5: `finished with Timeout in 20035 ms`, then 2.2 s once
 warm). The two requests of docs/TECHNICAL.md section 8.4 send no `keep_alive` field, because residency
@@ -191,8 +193,10 @@ Record the generated `https://<name>.trycloudflare.com` hostname. Never tunnel `
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://<name>.trycloudflare.com/admin/catalog   # 404
-``` A new tunnel gets a new hostname, so every tunnel start or restart repeats
-section 10 and a real smoke message.
+```
+
+A new tunnel gets a new hostname, so every tunnel start or restart repeats section 10 and a real
+smoke message.
 
 ## 10. Verify the WhatsApp callback
 

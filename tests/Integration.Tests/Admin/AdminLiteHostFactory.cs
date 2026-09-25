@@ -19,25 +19,29 @@ internal sealed class AdminLiteHostFactory : WebApplicationFactory<Program>
     private readonly string connectionString;
     private readonly string? adminPortSetting;
     private readonly Action<IServiceCollection>? configureServices;
+    private readonly string? adminUrl;
 
     public AdminLiteHostFactory(
         string connectionString,
         bool configureAdminPort = true,
         string? adminPortOverride = null,
-        Action<IServiceCollection>? configureServices = null)
+        Action<IServiceCollection>? configureServices = null,
+        Func<int, string?>? adminUrlOverride = null,
+        bool adminPortEqualsPublicPort = false)
     {
         this.connectionString = connectionString;
         this.configureServices = configureServices;
 
         PublicPort = FreeLoopbackPort();
         AdminPort = FreeLoopbackPort();
-        adminPortSetting = adminPortOverride ?? (configureAdminPort ? AdminPort.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);
+        var configuredAdminPort = adminPortEqualsPublicPort ? PublicPort : AdminPort;
+        adminPortSetting = adminPortOverride
+            ?? (configureAdminPort ? configuredAdminPort.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);
+        adminUrl = adminUrlOverride is null ? $"http://127.0.0.1:{AdminPort}" : adminUrlOverride(AdminPort);
 
-        UseKestrel(options =>
-        {
-            options.Listen(IPAddress.Loopback, PublicPort);
-            options.Listen(IPAddress.Loopback, AdminPort);
-        });
+        // The listeners come from the same Kestrel endpoint configuration the runbook uses, so the
+        // startup validation of Admin Lite sees exactly what production sees.
+        UseKestrel();
     }
 
     public string ConnectionString => connectionString;
@@ -64,6 +68,13 @@ internal sealed class AdminLiteHostFactory : WebApplicationFactory<Program>
         builder.UseSetting("WhatsApp:AppSecret", "test-app-secret");
         builder.UseSetting("WhatsApp:AccessToken", "test-access-token");
         builder.UseSetting("WhatsApp:WebhookPermitLimit", "1000");
+
+        builder.UseSetting("Kestrel:Endpoints:Public:Url", $"http://127.0.0.1:{PublicPort}");
+
+        if (adminUrl is not null)
+        {
+            builder.UseSetting("Kestrel:Endpoints:Admin:Url", adminUrl);
+        }
 
         if (adminPortSetting is not null)
         {

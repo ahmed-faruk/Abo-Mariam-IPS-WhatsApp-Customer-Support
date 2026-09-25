@@ -46,10 +46,12 @@ public sealed class AdminLiteConversationTests(PostgresContainerFixture postgres
         Assert.Equal(3, outbound.Count);
 
         var lines = AdminTranscriptComposer.Compose(inbound, outbound);
+        var reply = sender.Sent[0].Body;
 
-        Assert.Equal(["m1", "m2", "m3"], lines.Take(3).Select(line => line.Text));
-        Assert.Equal([true, true, true, false, false, false], lines.Select(line => line.Inbound));
-        Assert.Equal(lines, AdminTranscriptComposer.Compose(inbound, outbound));
+        // The inbound provider timestamps (10 and 5 minutes ago) precede every reply's creation time.
+        Assert.Equal(
+            [(true, "m1"), (true, "m2"), (true, "m3"), (false, reply), (false, reply), (false, reply)],
+            lines.Select(line => (line.Inbound, line.Text)));
     }
 
     [Fact]
